@@ -1,0 +1,18 @@
+{
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "character-maid.moc3",
+    "Textures": ["character-maid.2048/texture_00.png"],
+    "Expressions": [
+      { "Name": "auto_neutral", "File": "../default/expressions/auto_neutral.exp3.json" },
+      { "Name": "happy", "File": "../default/expressions/happy.exp3.json" },
+      { "Name": "sleepy", "File": "../default/expressions/sleepy.exp3.json" },
+      { "Name": "angry", "File": "../default/expressions/angry.exp3.json" },
+      { "Name": "error", "File": "../default/expressions/error.exp3.json" }
+    ]
+  },
+  "Groups": [
+    { "Target": "Parameter", "Name": "EyeBlink", "Ids": ["ParamEyeLOpen", "ParamEyeROpen"] },
+    { "Target": "Parameter", "Name": "LipSync", "Ids": ["ParamMouthOpenY"] }
+  ]
+}

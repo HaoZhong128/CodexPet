@@ -1,17 +1,10 @@
 node_modules/
 dist/
 src-tauri/target/
+tmp/
+portable/
 .superpowers/
-.worktrees/
-.tauri-scaffold/
-*.log
-*.wav
-*.7z
-*.pth
-*.ckpt
-voice-cache/
-
-# User-provided source material and external model runtimes stay outside Git.
-人物素材/
-人物语音参数/
 GPT-SoVITS-v2pro-20250604-nvidia50/
+人物语音参数/
+人物素材/
+assets/live2d-source/

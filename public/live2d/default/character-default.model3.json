@@ -1,0 +1,18 @@
+{
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "character-default.moc3",
+    "Textures": ["character-default.2048/texture_00.png"],
+    "Expressions": [
+      { "Name": "auto_neutral", "File": "expressions/auto_neutral.exp3.json" },
+      { "Name": "happy", "File": "expressions/happy.exp3.json" },
+      { "Name": "sleepy", "File": "expressions/sleepy.exp3.json" },
+      { "Name": "angry", "File": "expressions/angry.exp3.json" },
+      { "Name": "error", "File": "expressions/error.exp3.json" }
+    ]
+  },
+  "Groups": [
+    { "Target": "Parameter", "Name": "EyeBlink", "Ids": ["ParamEyeLOpen", "ParamEyeROpen"] },
+    { "Target": "Parameter", "Name": "LipSync", "Ids": ["ParamMouthOpenY"] }
+  ]
+}

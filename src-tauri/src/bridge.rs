@@ -26,6 +26,7 @@ pub enum HookKind {
 pub struct HookEvent {
     pub kind: HookKind,
     pub session_id: String,
+    pub source: Option<String>,
     pub tool_name: Option<String>,
 }
 
@@ -56,6 +57,10 @@ pub fn parse_hook(payload: Value) -> Result<HookEvent, String> {
     Ok(HookEvent {
         kind,
         session_id: session_id.to_owned(),
+        source: object
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         tool_name: object
             .get("tool_name")
             .and_then(Value::as_str)
@@ -105,6 +110,13 @@ enum TaskPhase {
 impl StatusStore {
     pub fn apply_at(&mut self, event: HookEvent, now_ms: u64) -> Option<StatusUpdate> {
         let state = match event.kind {
+            HookKind::SessionStart if event.source.as_deref() == Some("startup") => {
+                self.tasks.entry(event.session_id).or_insert(Task {
+                    started_at_ms: now_ms,
+                    phase: TaskPhase::Running,
+                });
+                Some(PetState::Running)
+            }
             HookKind::SessionStart if self.tasks.is_empty() => Some(PetState::Idle),
             HookKind::SessionStart => None,
             HookKind::UserPromptSubmit => {
@@ -333,6 +345,64 @@ mod tests {
     }
 
     #[test]
+    fn startup_session_tracks_first_desktop_turn_without_user_prompt_submit() {
+        let mut store = StatusStore::default();
+        let started = store
+            .apply_at(
+                parse_hook(json!({
+                    "hook_event_name": "SessionStart",
+                    "session_id": "session-1",
+                    "source": "startup",
+                }))
+                .unwrap(),
+                1_000,
+            )
+            .unwrap();
+
+        assert_eq!(started.state, PetState::Running);
+        assert_eq!(started.active_count, 1);
+        assert_eq!(started.running_count, 1);
+        assert_eq!(started.active_since_ms, Some(1_000));
+
+        let repeated = store
+            .apply_at(
+                parse_hook(json!({
+                    "hook_event_name": "SessionStart",
+                    "session_id": "session-1",
+                    "source": "startup",
+                }))
+                .unwrap(),
+                1_500,
+            )
+            .unwrap();
+        assert_eq!(repeated.active_since_ms, Some(1_000));
+
+        let completed = store
+            .apply_at(event(HookKind::Stop, "session-1", None), 2_000)
+            .unwrap();
+        assert_eq!(completed.state, PetState::Completed);
+    }
+
+    #[test]
+    fn resumed_session_does_not_create_a_new_active_task() {
+        let mut store = StatusStore::default();
+        let update = store
+            .apply_at(
+                parse_hook(json!({
+                    "hook_event_name": "SessionStart",
+                    "session_id": "session-1",
+                    "source": "resume",
+                }))
+                .unwrap(),
+                1_000,
+            )
+            .unwrap();
+
+        assert_eq!(update.state, PetState::Idle);
+        assert_eq!(update.active_count, 0);
+    }
+
+    #[test]
     fn request_user_input_waits_without_resetting_the_timer() {
         let mut store = StatusStore::default();
         store.apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000);
@@ -487,7 +557,15 @@ mod tests {
         let state = AppState::load(temp.path()).unwrap();
 
         let (running, running_wav) = state
-            .apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000)
+            .apply_at(
+                parse_hook(json!({
+                    "hook_event_name": "SessionStart",
+                    "session_id": "session-1",
+                    "source": "startup",
+                }))
+                .unwrap(),
+                1_000,
+            )
             .unwrap();
         assert_eq!(running.state, PetState::Running);
         assert_eq!(running.bubble_text.as_deref(), Some("开始工作。"));
@@ -622,6 +700,7 @@ mod tests {
         HookEvent {
             kind,
             session_id: session_id.to_owned(),
+            source: None,
             tool_name: tool_name.map(str::to_owned),
         }
     }

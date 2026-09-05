@@ -3,6 +3,8 @@ pub mod hooks;
 pub mod voice;
 pub mod window_region;
 
+use tauri::Manager;
+
 #[tauri::command]
 fn get_status(state: tauri::State<'_, bridge::AppState>) -> bridge::StatusUpdate {
     state.current()
@@ -47,6 +49,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             set_window_region
         ])
         .setup(move |app| {
+            let window = app.get_webview_window("main").unwrap();
+            window_region::position_bottom_right(&window).map_err(std::io::Error::other)?;
             hooks::ensure_codex_hooks(&hooks::codex_home(), &exe)?;
             bridge::start_pipe(app.handle().clone(), pipe_state.clone())?;
             Ok(())

@@ -1,5 +1,18 @@
-use codexpet_lib::window_region::{create_region, rectangles_from_runs};
+use codexpet_lib::window_region::{bottom_right_position, create_region, rectangles_from_runs};
+use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::Graphics::Gdi::{DeleteObject, PtInRegion};
+
+#[test]
+fn positions_window_at_the_work_area_bottom_right() {
+    let work_area = RECT {
+        left: -1920,
+        top: 40,
+        right: 0,
+        bottom: 1080,
+    };
+
+    assert_eq!(bottom_right_position(work_area, 400, 560, 12), (-412, 508));
+}
 
 #[test]
 fn scales_alpha_runs_without_filling_transparent_gaps() {

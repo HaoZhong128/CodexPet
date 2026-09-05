@@ -1,9 +1,63 @@
-use windows_sys::Win32::Foundation::RECT;
+use windows_sys::Win32::Foundation::{POINT, RECT};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateRectRgn, DeleteObject, ExtCreateRegion, SetWindowRgn, HRGN, RDH_RECTANGLES, RGNDATA,
-    RGNDATAHEADER,
+    CreateRectRgn, DeleteObject, ExtCreateRegion, GetMonitorInfoW, MonitorFromPoint, SetWindowRgn,
+    HRGN, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, RDH_RECTANGLES, RGNDATA, RGNDATAHEADER,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GetClientRect, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+};
+
+const STARTUP_MARGIN: i32 = 12;
+
+pub fn position_bottom_right(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
+    let monitor = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+    let mut monitor_info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        rcMonitor: RECT::default(),
+        rcWork: RECT::default(),
+        dwFlags: 0,
+    };
+    let mut window_rect = RECT::default();
+    if unsafe { GetMonitorInfoW(monitor, &mut monitor_info) } == 0
+        || unsafe { GetWindowRect(hwnd, &mut window_rect) } == 0
+    {
+        return Err("could not read the desktop work area".to_string());
+    }
+    let (x, y) = bottom_right_position(
+        monitor_info.rcWork,
+        window_rect.right - window_rect.left,
+        window_rect.bottom - window_rect.top,
+        STARTUP_MARGIN,
+    );
+    if unsafe {
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+    } == 0
+    {
+        return Err("could not position the window".to_string());
+    }
+    Ok(())
+}
+
+pub fn bottom_right_position(
+    work_area: RECT,
+    window_width: i32,
+    window_height: i32,
+    margin: i32,
+) -> (i32, i32) {
+    (
+        work_area.right - window_width - margin,
+        work_area.bottom - window_height - margin,
+    )
+}
 
 pub fn set_window_region(
     window: &tauri::WebviewWindow,

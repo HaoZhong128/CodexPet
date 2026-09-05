@@ -9,7 +9,7 @@ use serde_json::Value;
 use tauri::Emitter;
 
 use crate::hooks::{create_pipe_server, PipeServer, MAX_PAYLOAD_BYTES};
-use crate::voice::{play_wav, VoiceBank};
+use crate::voice::{play_wav, VoiceBank, VoiceClip};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookKind {
@@ -217,6 +217,10 @@ impl AppState {
 
     pub fn current(&self) -> StatusUpdate {
         self.store.lock().unwrap().current()
+    }
+
+    pub fn click_feedback(&self) -> Option<VoiceClip> {
+        self.voice.choose_click()
     }
 
     fn apply_at(&self, event: HookEvent, now_ms: u64) -> Option<(StatusUpdate, Option<PathBuf>)> {
@@ -546,6 +550,22 @@ mod tests {
         assert_eq!(ended.active_since_ms, None);
         assert_eq!(ended.bubble_text, None);
         assert_eq!(wav, None);
+    }
+
+    #[test]
+    fn click_feedback_does_not_change_the_current_status() {
+        let temp = tempdir().unwrap();
+        write_voice_pair(temp.path(), "click", "click-voice", "当断即断！");
+        let state = AppState::load(temp.path()).unwrap();
+        state
+            .apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000)
+            .unwrap();
+
+        let clip = state.click_feedback().unwrap();
+
+        assert_eq!(clip.text, "当断即断！");
+        assert_same_stem(&clip.wav_path, "click-voice");
+        assert_eq!(state.current().state, PetState::Running);
     }
 
     #[test]

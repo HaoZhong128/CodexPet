@@ -13,6 +13,10 @@ const statusMocks = vi.hoisted(() => ({
     >(),
 }));
 
+const tauriMocks = vi.hoisted(() => ({
+  invoke: vi.fn<(command: string) => Promise<unknown>>(),
+}));
+
 const live2dMock = vi.hoisted(() => ({
   load: vi.fn<() => Promise<void>>(),
   setExpression: vi.fn(),
@@ -28,6 +32,10 @@ vi.mock("./live2d", () => ({
   Live2DView: {
     create: vi.fn(async () => live2dMock),
   },
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: tauriMocks.invoke,
 }));
 
 function update(
@@ -68,6 +76,9 @@ beforeEach(() => {
     emitStatus = onUpdate;
     return () => undefined;
   });
+  tauriMocks.invoke.mockImplementation(async (command) =>
+    command === "play_click_voice" ? "当断即断！" : null,
+  );
 });
 
 afterEach(() => {
@@ -213,5 +224,48 @@ describe("status contract", () => {
 
     expect(menu.style.left).toBe("272px");
     expect(menu.style.top).toBe("320px");
+  });
+
+  it("shows click feedback for three seconds and restores the status bubble", async () => {
+    statusMocks.getStatus.mockResolvedValue(
+      update("running", "管理员，我还在工作。"),
+    );
+    const root = document.querySelector<HTMLElement>("#app")!;
+    await new App().mount(root);
+
+    root.querySelector<HTMLElement>("#pet")!.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+    );
+    await vi.waitFor(() => {
+      expect(root.querySelector("#bubble")!.textContent).toBe("当断即断！");
+    });
+
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(root.querySelector("#bubble")!.textContent).toBe(
+      "管理员，我还在工作。",
+    );
+  });
+
+  it("keeps a newer status when click feedback finishes loading later", async () => {
+    const clickFeedback = deferred<string | null>();
+    tauriMocks.invoke.mockImplementation(async (command) =>
+      command === "play_click_voice" ? clickFeedback.promise : null,
+    );
+    statusMocks.getStatus.mockResolvedValue(update("running", "正在处理。"));
+    const root = document.querySelector<HTMLElement>("#app")!;
+    await new App().mount(root);
+
+    root.querySelector<HTMLElement>("#pet")!.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+    );
+    emitStatus(update("waiting_choice", "管理员，请审核。"));
+    clickFeedback.resolve("当断即断！");
+    await clickFeedback.promise;
+    for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+
+    expect(root.querySelector("#bubble")!.textContent).toBe(
+      "管理员，请审核。",
+    );
   });
 });

@@ -8,6 +8,13 @@ fn get_status(state: tauri::State<'_, bridge::AppState>) -> bridge::StatusUpdate
 }
 
 #[tauri::command]
+fn play_click_voice(state: tauri::State<'_, bridge::AppState>) -> Option<String> {
+    let clip = state.click_feedback()?;
+    voice::play_wav(&clip.wav_path);
+    Some(clip.text)
+}
+
+#[tauri::command]
 fn start_dragging(window: tauri::WebviewWindow) -> Result<(), String> {
     window.start_dragging().map_err(|error| error.to_string())
 }
@@ -22,7 +29,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     tauri::Builder::default()
         .manage(state)
-        .invoke_handler(tauri::generate_handler![get_status, start_dragging])
+        .invoke_handler(tauri::generate_handler![
+            get_status,
+            play_click_voice,
+            start_dragging
+        ])
         .setup(move |app| {
             hooks::ensure_codex_hooks(&hooks::codex_home(), &exe)?;
             bridge::start_pipe(app.handle().clone(), pipe_state.clone())?;

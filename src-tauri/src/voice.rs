@@ -19,6 +19,7 @@ pub struct VoiceClip {
 
 pub struct VoiceBank {
     clips: HashMap<PetState, Vec<VoiceClip>>,
+    click_clips: Vec<VoiceClip>,
 }
 
 fn category(state: PetState) -> &'static str {
@@ -59,7 +60,23 @@ impl VoiceBank {
             }
             clips.insert(state, state_clips);
         }
-        Ok(Self { clips })
+
+        let folder = exe_dir.join("voice").join("click");
+        let mut click_clips = Vec::new();
+        if folder.is_dir() {
+            for entry in fs::read_dir(folder)? {
+                let txt = entry?.path();
+                let wav = txt.with_extension("wav");
+                if txt.extension().and_then(OsStr::to_str) == Some("txt") && wav.is_file() {
+                    click_clips.push(VoiceClip {
+                        text: fs::read_to_string(&txt)?,
+                        wav_path: wav,
+                    });
+                }
+            }
+        }
+
+        Ok(Self { clips, click_clips })
     }
 
     pub fn choose(&self, state: PetState) -> Option<VoiceClip> {
@@ -72,6 +89,19 @@ impl VoiceBank {
             .ok()?
             .subsec_nanos();
         clips.get(nanos as usize % clips.len()).cloned()
+    }
+
+    pub fn choose_click(&self) -> Option<VoiceClip> {
+        if self.click_clips.is_empty() {
+            return None;
+        }
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()?
+            .subsec_nanos();
+        self.click_clips
+            .get(nanos as usize % self.click_clips.len())
+            .cloned()
     }
 }
 
@@ -119,6 +149,22 @@ mod tests {
 
         assert_eq!(clip.text, "主人，请选一个吧。");
         assert!(clip.wav_path.ends_with("question\\01.wav"));
+    }
+
+    #[test]
+    fn loads_click_feedback_from_its_own_directory() {
+        let temp = tempdir().unwrap();
+        let folder = temp.path().join("voice/click");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("01.txt"), "当断即断！").unwrap();
+        fs::write(folder.join("01.wav"), b"RIFF-test").unwrap();
+        fs::write(folder.join("ignored.txt"), "没有 wav").unwrap();
+
+        let bank = VoiceBank::load(temp.path()).unwrap();
+        let clip = bank.choose_click().unwrap();
+
+        assert_eq!(clip.text, "当断即断！");
+        assert!(clip.wav_path.ends_with("click\\01.wav"));
     }
 
     #[test]

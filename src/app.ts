@@ -23,11 +23,11 @@ const OUTFITS: ReadonlyArray<readonly [Outfit, string]> = [
 ];
 
 const EXPRESSIONS: ReadonlyArray<readonly [Expression, string]> = [
-  ["auto_neutral", "中性"],
+  ["auto_neutral", "默认"],
   ["happy", "开心"],
   ["angry", "生气"],
   ["sleepy", "困倦"],
-  ["error", "出错"],
+  ["error", "沮丧"],
 ];
 
 export class App {
@@ -38,7 +38,9 @@ export class App {
   private expression: Expression = "auto_neutral";
   private outfitLoad: Promise<void> = Promise.resolve();
   private statusGeneration = 0;
+  private clickGeneration = 0;
   private terminalResetTimer: number | undefined;
+  private clickBubbleTimer: number | undefined;
 
   async mount(root: HTMLElement): Promise<void> {
     this.root = root;
@@ -88,6 +90,10 @@ export class App {
 
   applyStatus(update: StatusUpdate): void {
     this.statusGeneration += 1;
+    if (this.clickBubbleTimer !== undefined) {
+      window.clearTimeout(this.clickBubbleTimer);
+      this.clickBubbleTimer = undefined;
+    }
     if (this.terminalResetTimer !== undefined) {
       window.clearTimeout(this.terminalResetTimer);
       this.terminalResetTimer = undefined;
@@ -110,6 +116,28 @@ export class App {
     this.root.querySelector("#hud")!.textContent = hudText(update, Date.now());
   }
 
+  private async playClickVoice(): Promise<void> {
+    const clickGeneration = ++this.clickGeneration;
+    const statusGeneration = this.statusGeneration;
+    const text = await invoke<string | null>("play_click_voice");
+    if (
+      !text ||
+      clickGeneration !== this.clickGeneration ||
+      statusGeneration !== this.statusGeneration
+    ) {
+      return;
+    }
+    this.root.querySelector("#bubble")!.textContent = text;
+    if (this.clickBubbleTimer !== undefined) {
+      window.clearTimeout(this.clickBubbleTimer);
+    }
+    this.clickBubbleTimer = window.setTimeout(() => {
+      this.clickBubbleTimer = undefined;
+      this.root.querySelector("#bubble")!.textContent =
+        this.status?.bubbleText ?? "";
+    }, 3_000);
+  }
+
   private markMenuSelection(): void {
     for (const button of this.root.querySelectorAll<HTMLButtonElement>(
       "#menu button",
@@ -123,10 +151,12 @@ export class App {
   }
 
   private bindPointerActions(pet: HTMLElement): void {
-    pet.addEventListener("click", () => {
+    pet.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
       this.root.classList.remove("pet--poked");
       void this.root.offsetWidth;
       this.root.classList.add("pet--poked");
+      void this.playClickVoice();
     });
     pet.addEventListener("animationend", (event) => {
       if ((event as AnimationEvent).animationName === "poke") {
@@ -134,7 +164,7 @@ export class App {
       }
     });
     this.root.addEventListener("pointerdown", (event) => {
-      if (event.button === 0 && event.target === this.root) {
+      if (event.button === 0 && !(event.target as Element).closest("#menu")) {
         void invoke("start_dragging");
       }
     });

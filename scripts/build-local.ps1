@@ -9,12 +9,12 @@ npm run build
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo test --manifest-path src-tauri\Cargo.toml
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo build --release --manifest-path src-tauri\Cargo.toml
+cargo build --release --manifest-path src-tauri\Cargo.toml --features tauri/custom-protocol
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 Copy-Item -LiteralPath 'src-tauri\target\release\codexpet.exe' -Destination "$runtime\CodexPet.exe" -Force
 New-Item -ItemType Directory -Force -Path "$runtime\voice" | Out-Null
-foreach ($category in 'idle','running','question','permission','completed','interrupted') {
+foreach ($category in 'idle','running','question','permission','completed','interrupted','click') {
     New-Item -ItemType Directory -Force -Path "$runtime\voice\$category" | Out-Null
 }

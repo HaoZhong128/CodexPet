@@ -20,6 +20,7 @@ const tauriMocks = vi.hoisted(() => ({
 const live2dMock = vi.hoisted(() => ({
   load: vi.fn<() => Promise<void>>(),
   setExpression: vi.fn(),
+  startHitTesting: vi.fn(),
 }));
 
 vi.mock("./status", async (importOriginal) => ({

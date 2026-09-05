@@ -1,4 +1,5 @@
-import type { Application } from "pixi.js";
+import { invoke } from "@tauri-apps/api/core";
+import type { Application, Rectangle } from "pixi.js";
 import type { Live2DModel } from "untitled-pixi-live2d-engine/cubism";
 
 const HOSTED_CORE =
@@ -12,10 +13,16 @@ let pixiConfigured = false;
 
 export class Live2DView {
   private model: Live2DModel | null = null;
+  private hitTestInFlight = false;
+  private lastHitTestAt = 0;
+  private readonly sourceCanvas = document.createElement("canvas");
+  private readonly maskCanvas = document.createElement("canvas");
 
   private constructor(
     private readonly host: HTMLElement,
     private readonly app: Application,
+    private readonly canvas: HTMLCanvasElement,
+    private readonly RectangleType: typeof Rectangle,
   ) {}
 
   static async create(host: HTMLElement): Promise<Live2DView> {
@@ -41,7 +48,7 @@ export class Live2DView {
       autoDensity: true,
       preference: "webgl",
     });
-    const view = new Live2DView(host, app);
+    const view = new Live2DView(host, app, canvas, pixi.Rectangle);
     new ResizeObserver(() => view.resize()).observe(host);
     view.resize();
     return view;
@@ -71,6 +78,85 @@ export class Live2DView {
 
   setExpression(name: string): void {
     if (this.model) void this.model.expression(name);
+  }
+
+  startHitTesting(uiElements: HTMLElement[]): void {
+    const update = (now: number) => {
+      if (!this.hitTestInFlight && now - this.lastHitTestAt >= 50) {
+        this.lastHitTestAt = now;
+        this.hitTestInFlight = true;
+        this.updateWindowRegion(uiElements).finally(() => {
+          this.hitTestInFlight = false;
+        });
+      }
+      window.requestAnimationFrame(update);
+    };
+    window.requestAnimationFrame(update);
+  }
+
+  private async updateWindowRegion(uiElements: HTMLElement[]): Promise<void> {
+    const hostBounds = this.host.getBoundingClientRect();
+    const width = Math.max(Math.round(hostBounds.width), 1);
+    const height = Math.max(Math.round(hostBounds.height), 1);
+    const extracted = this.app.renderer.extract.pixels({
+      target: this.app.stage,
+      frame: new this.RectangleType(0, 0, width, height),
+      resolution: 1,
+      clearColor: [0, 0, 0, 0],
+    });
+
+    this.sourceCanvas.width = extracted.width;
+    this.sourceCanvas.height = extracted.height;
+    const sourceContext = this.sourceCanvas.getContext("2d")!;
+    sourceContext.putImageData(
+      new ImageData(extracted.pixels, extracted.width, extracted.height),
+      0,
+      0,
+    );
+
+    this.maskCanvas.width = window.innerWidth;
+    this.maskCanvas.height = window.innerHeight;
+    const context = this.maskCanvas.getContext("2d", {
+      willReadFrequently: true,
+    })!;
+    const style = window.getComputedStyle(this.canvas);
+    const matrix = new DOMMatrix(style.transform);
+    const [originX, originY] = style.transformOrigin
+      .split(" ")
+      .map((value) => Number.parseFloat(value));
+    context.translate(hostBounds.left + originX, hostBounds.top + originY);
+    context.transform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f);
+    context.translate(-originX, -originY);
+    context.filter = style.filter;
+    context.drawImage(this.sourceCanvas, 0, 0, hostBounds.width, hostBounds.height);
+
+    context.resetTransform();
+    context.filter = "none";
+    context.fillStyle = "#fff";
+    for (const element of uiElements) {
+      const elementStyle = window.getComputedStyle(element);
+      if (
+        elementStyle.display === "none" ||
+        elementStyle.visibility === "hidden" ||
+        Number.parseFloat(elementStyle.opacity) === 0
+      ) {
+        continue;
+      }
+      const bounds = element.getBoundingClientRect();
+      context.fillRect(bounds.left, bounds.top, bounds.width, bounds.height);
+    }
+
+    const pixels = context.getImageData(
+      0,
+      0,
+      this.maskCanvas.width,
+      this.maskCanvas.height,
+    ).data;
+    await invoke("set_window_region", {
+      width: this.maskCanvas.width,
+      height: this.maskCanvas.height,
+      runs: alphaRuns(pixels, this.maskCanvas.width, this.maskCanvas.height),
+    });
   }
 
   private resize(): void {
@@ -133,4 +219,22 @@ function adaptCubism6RenderOrders(model: Live2DModel): void {
   if (getRenderOrders) {
     core.getDrawableRenderOrders = () => getRenderOrders.call(core._model);
   }
+}
+
+export function alphaRuns(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+): number[] {
+  const runs: number[] = [];
+  for (let y = 0; y < height; y += 1) {
+    let x = 0;
+    while (x < width) {
+      while (x < width && pixels[(y * width + x) * 4 + 3] === 0) x += 1;
+      const start = x;
+      while (x < width && pixels[(y * width + x) * 4 + 3] !== 0) x += 1;
+      if (start < x) runs.push(y, start, x);
+    }
+  }
+  return runs;
 }

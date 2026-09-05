@@ -58,6 +58,11 @@ export class App {
     });
     this.markMenuSelection();
     this.bindPointerActions(pet);
+    this.live2d.startHitTesting([
+      root.querySelector<HTMLElement>("#bubble")!,
+      root.querySelector<HTMLElement>("#hud")!,
+      menu,
+    ]);
 
     const generation = this.statusGeneration;
     await listenForStatus((update) => this.applyStatus(update));

@@ -147,9 +147,9 @@ enum TaskPhase {
 
 impl StatusStore {
     pub fn apply_at(&mut self, event: HookEvent, now_ms: u64) -> Option<StatusUpdate> {
-        let state = match event.kind {
-            HookKind::SessionStart if self.tasks.is_empty() => Some(PetState::Idle),
-            HookKind::SessionStart => None,
+        let before = self.current();
+        let terminal = match event.kind {
+            HookKind::SessionStart => return None,
             HookKind::UserPromptSubmit => {
                 if !event.resumable_session {
                     return None;
@@ -161,26 +161,20 @@ impl StatusStore {
                         started_at_ms: now_ms,
                         phase: TaskPhase::Running,
                     });
-                Some(PetState::Running)
+                None
             }
             HookKind::PreToolUse if event.tool_name.as_deref() == Some("request_user_input") => {
                 let task = self.tasks.get_mut(&event.session_id)?;
-                let state = match event.user_input {
-                    Some(UserInputKind::Choice) => {
-                        task.phase = TaskPhase::WaitingChoice;
-                        PetState::WaitingChoice
-                    }
-                    _ => {
-                        task.phase = TaskPhase::WaitingInput;
-                        PetState::WaitingInput
-                    }
+                task.phase = match event.user_input {
+                    Some(UserInputKind::Choice) => TaskPhase::WaitingChoice,
+                    _ => TaskPhase::WaitingInput,
                 };
-                Some(state)
+                None
             }
             HookKind::PermissionRequest => {
                 let task = self.tasks.get_mut(&event.session_id)?;
                 task.phase = TaskPhase::WaitingPermission;
-                Some(PetState::WaitingPermission)
+                None
             }
             HookKind::PostToolUse => {
                 let task = self.tasks.get_mut(&event.session_id)?;
@@ -195,7 +189,7 @@ impl StatusStore {
                     return None;
                 }
                 task.phase = TaskPhase::Running;
-                Some(PetState::Running)
+                None
             }
             HookKind::Stop => self
                 .tasks
@@ -205,13 +199,21 @@ impl StatusStore {
                 .tasks
                 .remove(&event.session_id)
                 .map(|_| PetState::Interrupted),
-            HookKind::SessionEnd => self
-                .tasks
-                .remove(&event.session_id)
-                .map(|_| self.aggregate_state()),
-            HookKind::PreToolUse => None,
+            HookKind::SessionEnd => {
+                self.tasks.remove(&event.session_id)?;
+                None
+            }
+            HookKind::PreToolUse => return None,
         };
-        state.map(|state| self.snapshot(state))
+
+        let aggregate = self.aggregate_state();
+        let visible = if aggregate == PetState::Idle {
+            terminal.unwrap_or(PetState::Idle)
+        } else {
+            aggregate
+        };
+        let update = self.snapshot(visible);
+        (update != before).then_some(update)
     }
 
     fn aggregate_state(&self) -> PetState {
@@ -474,20 +476,19 @@ mod tests {
     #[test]
     fn resumed_session_does_not_create_a_new_active_task() {
         let mut store = StatusStore::default();
-        let update = store
-            .apply_at(
-                parse_hook(json!({
-                    "hook_event_name": "SessionStart",
-                    "session_id": "session-1",
-                    "source": "resume",
-                }))
-                .unwrap(),
-                1_000,
-            )
-            .unwrap();
+        let update = store.apply_at(
+            parse_hook(json!({
+                "hook_event_name": "SessionStart",
+                "session_id": "session-1",
+                "source": "resume",
+            }))
+            .unwrap(),
+            1_000,
+        );
 
-        assert_eq!(update.state, PetState::Idle);
-        assert_eq!(update.active_count, 0);
+        assert_eq!(update, None);
+        assert_eq!(store.current().state, PetState::Idle);
+        assert_eq!(store.current().active_count, 0);
     }
 
     #[test]
@@ -596,6 +597,107 @@ mod tests {
         assert_eq!(update.state, PetState::Interrupted);
         assert_eq!(update.active_count, 0);
         assert_eq!(update.waiting_count, 0);
+    }
+
+    #[test]
+    fn terminal_event_does_not_override_other_active_work() {
+        let mut store = StatusStore::default();
+        store.apply_at(event(HookKind::UserPromptSubmit, "running", None), 1_000);
+        store.apply_at(event(HookKind::UserPromptSubmit, "waiting", None), 2_000);
+        store.apply_at(
+            event(
+                HookKind::PreToolUse,
+                "waiting",
+                Some("request_user_input"),
+            ),
+            3_000,
+        );
+
+        let after_stop = store
+            .apply_at(event(HookKind::Stop, "running", None), 4_000)
+            .unwrap();
+
+        assert_eq!(after_stop.state, PetState::WaitingChoice);
+        assert_eq!(after_stop.running_count, 0);
+        assert_eq!(after_stop.waiting_count, 1);
+    }
+
+    #[test]
+    fn running_count_tracks_zero_one_and_two_sessions() {
+        let mut store = StatusStore::default();
+        assert_eq!(store.current().running_count, 0);
+
+        let one = store
+            .apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000)
+            .unwrap();
+        assert_eq!(one.running_count, 1);
+
+        let two = store
+            .apply_at(event(HookKind::UserPromptSubmit, "session-2", None), 2_000)
+            .unwrap();
+        assert_eq!(two.running_count, 2);
+        assert_eq!(two.active_since_ms, Some(1_000));
+    }
+
+    #[test]
+    fn waiting_precedence_is_choice_then_permission_then_input() {
+        let mut store = StatusStore::default();
+        for session_id in ["input", "permission", "choice"] {
+            store.apply_at(
+                event(HookKind::UserPromptSubmit, session_id, None),
+                1_000,
+            );
+        }
+        store.apply_at(
+            parse_hook(json!({
+                "hook_event_name": "PreToolUse",
+                "session_id": "input",
+                "tool_name": "request_user_input",
+                "tool_input": {"questions": [{"id": "answer"}]}
+            }))
+            .unwrap(),
+            2_000,
+        );
+        store.apply_at(
+            event(HookKind::PermissionRequest, "permission", None),
+            2_000,
+        );
+        let choice = store
+            .apply_at(
+                event(
+                    HookKind::PreToolUse,
+                    "choice",
+                    Some("request_user_input"),
+                ),
+                2_000,
+            )
+            .unwrap();
+        assert_eq!(choice.state, PetState::WaitingChoice);
+
+        let permission = store
+            .apply_at(event(HookKind::Stop, "choice", None), 3_000)
+            .unwrap();
+        assert_eq!(permission.state, PetState::WaitingPermission);
+
+        let input = store
+            .apply_at(event(HookKind::Stop, "permission", None), 4_000)
+            .unwrap();
+        assert_eq!(input.state, PetState::WaitingInput);
+        assert_eq!(input.running_count, 0);
+        assert_eq!(input.waiting_count, 1);
+    }
+
+    #[test]
+    fn duplicate_phase_event_does_not_emit_or_reannounce() {
+        let mut store = StatusStore::default();
+        assert!(store
+            .apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000)
+            .is_some());
+
+        assert_eq!(
+            store.apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 2_000),
+            None
+        );
     }
 
     #[test]

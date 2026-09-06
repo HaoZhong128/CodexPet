@@ -181,11 +181,11 @@ describe("status contract", () => {
     motionTick(400);
 
     expect(live2dMock.setMotionFrame).toHaveBeenLastCalledWith(
-      expect.objectContaining({ action: "running_sword" }),
+      expect.objectContaining({ action: "running" }),
     );
   });
 
-  it("moves the Live2D model and its props together during sword practice", async () => {
+  it("keeps the app DOM free of canceled action props", async () => {
     statusMocks.getStatus.mockResolvedValue(update("idle"));
     let motionTick!: FrameRequestCallback;
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
@@ -199,12 +199,12 @@ describe("status contract", () => {
     app.applyStatus(update("running"));
     motionTick(400);
 
-    const modelTransform = root.querySelector<HTMLCanvasElement>("canvas")!
-      .style.transform;
-    const propsTransform = root.querySelector<HTMLElement>("#props")!.style
-      .transform;
-    expect(modelTransform).toMatch(/^translate\(.+px, .+px\) rotate\(.+deg\) scale\(.+\)$/);
-    expect(propsTransform).toBe(modelTransform);
+    expect(root.querySelector("#props")).toBeNull();
+    expect(root.querySelector("#weapon")).toBeNull();
+    expect(root.querySelector("#accessory")).toBeNull();
+    expect(root.querySelector<HTMLCanvasElement>("canvas")!.style.transform).toBe(
+      "",
+    );
   });
 
   it("keeps only outfit choices in the context menu", async () => {
@@ -364,64 +364,4 @@ describe("status contract", () => {
     expect(menu.style.top).toBe("320px");
   });
 
-  it("keeps headpat text through the longest clip and restores the status bubble", async () => {
-    statusMocks.getStatus.mockResolvedValue(
-      update("running", "管理员，我还在工作。"),
-    );
-    let motionTick!: FrameRequestCallback;
-    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-      motionTick = callback;
-      return 1;
-    });
-    const root = document.querySelector<HTMLElement>("#app")!;
-    await new App().mount(root);
-
-    root.querySelector<HTMLElement>("#pet")!.dispatchEvent(
-      new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
-    );
-    motionTick(100);
-    await vi.waitFor(() => {
-      expect(tauriMocks.invoke).toHaveBeenCalledWith("play_action_voice", {
-        category: "headpat_start",
-      });
-      expect(root.querySelector("#bubble")!.textContent).toBe("嗯？");
-    });
-
-    await vi.advanceTimersByTimeAsync(3_100);
-    expect(root.querySelector("#bubble")!.textContent).toBe("嗯？");
-
-    await vi.advanceTimersByTimeAsync(100);
-
-    expect(root.querySelector("#bubble")!.textContent).toBe(
-      "管理员，我还在工作。",
-    );
-  });
-
-  it("keeps a newer status when headpat feedback finishes loading later", async () => {
-    const actionFeedback = deferred<string | null>();
-    tauriMocks.invoke.mockImplementation(async (command) =>
-      command === "play_action_voice" ? actionFeedback.promise : null,
-    );
-    statusMocks.getStatus.mockResolvedValue(update("running", "正在处理。"));
-    let motionTick!: FrameRequestCallback;
-    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-      motionTick = callback;
-      return 1;
-    });
-    const root = document.querySelector<HTMLElement>("#app")!;
-    await new App().mount(root);
-
-    root.querySelector<HTMLElement>("#pet")!.dispatchEvent(
-      new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
-    );
-    motionTick(100);
-    emitStatus(update("waiting_choice", "管理员，请审核。"));
-    actionFeedback.resolve("嗯？");
-    await actionFeedback.promise;
-    for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
-
-    expect(root.querySelector("#bubble")!.textContent).toBe(
-      "管理员，请审核。",
-    );
-  });
 });

@@ -37,57 +37,7 @@ body,
   display: block;
   width: 100%;
   height: 100%;
-  transform-origin: 50% 82%;
   filter: drop-shadow(0 10px 11px rgb(29 24 37 / 24%));
-}
-
-#props {
-  position: absolute;
-  z-index: 2;
-  inset: 0;
-  transform-origin: 50% 82%;
-  pointer-events: none;
-}
-
-#weapon {
-  position: absolute;
-  z-index: 2;
-  top: 46%;
-  left: 29%;
-  width: 52%;
-  height: auto;
-  opacity: 0;
-  transform-origin: 18% 10%;
-  pointer-events: none;
-}
-
-#accessory {
-  position: absolute;
-  z-index: 3;
-  height: auto;
-  opacity: 0;
-  pointer-events: none;
-}
-
-#accessory[data-kind="bun"] {
-  top: 37%;
-  left: 37%;
-  width: 27%;
-  transform-origin: 50% 70%;
-}
-
-#accessory[data-kind="cloth"] {
-  top: 58%;
-  left: 38%;
-  width: 17%;
-  transform-origin: 50% 50%;
-}
-
-#accessory[data-kind="sleep"] {
-  top: 20%;
-  left: 66%;
-  width: 14%;
-  transform-origin: 50% 80%;
 }
 
 #bubble {

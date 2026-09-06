@@ -1,15 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import {
-  ActionVoiceScheduler,
-  type ActionVoiceCategory,
-} from "./action-voice";
 import { Live2DView } from "./live2d";
-import {
-  MotionController,
-  type AccessoryFrame,
-  type MotionFrame,
-} from "./motion";
+import { MotionController } from "./motion";
 import {
   getStatus,
   isTerminal,
@@ -30,29 +22,20 @@ const OUTFITS: ReadonlyArray<readonly [Outfit, string]> = [
   ["maid", "女仆服装"],
 ];
 
-const ACCESSORIES: Record<Exclude<AccessoryFrame["kind"], null>, string> = {
-  bun: "/live2d/props/bun.png",
-  cloth: "/live2d/props/cloth.png",
-  sleep: "/live2d/props/sleep-bubble.png",
-};
-
 export class App {
   private root!: HTMLElement;
   private live2d!: Live2DView;
   private status: StatusUpdate | null = null;
   private outfit: Outfit = "default";
   private readonly motion = new MotionController();
-  private readonly actionVoice = new ActionVoiceScheduler();
   private outfitLoad: Promise<void> = Promise.resolve();
   private statusGeneration = 0;
-  private actionVoiceGeneration = 0;
   private terminalResetTimer: number | undefined;
-  private actionBubbleTimer: number | undefined;
 
   async mount(root: HTMLElement): Promise<void> {
     this.root = root;
     root.innerHTML =
-      '<div id="pet"><div id="props"><img id="weapon" src="/live2d/props/character-default-sword-v2.png" alt=""><img id="accessory" alt=""></div></div><div id="bubble"></div><section id="hud" aria-label="Codex 状态"><div class="status-heading"><span class="status-dot"></span><span class="status-title">CodexPet</span><span id="status-name"></span></div><div class="status-meta"><span id="status-running"></span><span id="status-waiting"></span><span id="status-elapsed"></span></div></section><div id="menu"></div>';
+      '<div id="pet"></div><div id="bubble"></div><section id="hud" aria-label="Codex 状态"><div class="status-heading"><span class="status-dot"></span><span class="status-title">CodexPet</span><span id="status-name"></span></div><div class="status-meta"><span id="status-running"></span><span id="status-waiting"></span><span id="status-elapsed"></span></div></section><div id="menu"></div>';
 
     const pet = root.querySelector<HTMLElement>("#pet")!;
     const menu = root.querySelector<HTMLElement>("#menu")!;
@@ -93,11 +76,6 @@ export class App {
 
   applyStatus(update: StatusUpdate): void {
     this.statusGeneration += 1;
-    this.actionVoiceGeneration += 1;
-    if (this.actionBubbleTimer !== undefined) {
-      window.clearTimeout(this.actionBubbleTimer);
-      this.actionBubbleTimer = undefined;
-    }
     if (this.terminalResetTimer !== undefined) {
       window.clearTimeout(this.terminalResetTimer);
       this.terminalResetTimer = undefined;
@@ -131,31 +109,6 @@ export class App {
     elapsed.hidden = view.elapsed === null;
   }
 
-  private async playActionVoice(category: ActionVoiceCategory): Promise<void> {
-    const voiceGeneration = ++this.actionVoiceGeneration;
-    const statusGeneration = this.statusGeneration;
-    const text = await invoke<string | null>("play_action_voice", { category });
-    if (statusGeneration !== this.statusGeneration) {
-      if (text) await invoke("stop_voice");
-      return;
-    }
-    if (
-      !text ||
-      voiceGeneration !== this.actionVoiceGeneration
-    ) {
-      return;
-    }
-    this.root.querySelector("#bubble")!.textContent = text;
-    if (this.actionBubbleTimer !== undefined) {
-      window.clearTimeout(this.actionBubbleTimer);
-    }
-    this.actionBubbleTimer = window.setTimeout(() => {
-      this.actionBubbleTimer = undefined;
-      this.root.querySelector("#bubble")!.textContent =
-        this.status?.bubbleText ?? "";
-    }, 3_200);
-  }
-
   private markMenuSelection(): void {
     for (const button of this.root.querySelectorAll<HTMLButtonElement>(
       "#menu button",
@@ -180,52 +133,13 @@ export class App {
   }
 
   private startMotionLoop(): void {
-    const canvas = this.root.querySelector<HTMLCanvasElement>("#pet canvas")!;
-    const props = this.root.querySelector<HTMLElement>("#props")!;
-    const weapon = this.root.querySelector<HTMLElement>("#weapon")!;
-    const accessory = this.root.querySelector<HTMLImageElement>("#accessory")!;
     const update = (now: number) => {
       const frame = this.motion.sample(now);
       this.live2d.setMotionFrame(frame);
-      this.renderCharacter(canvas, props, frame);
-      this.renderWeapon(weapon, frame);
-      this.renderAccessory(accessory, frame.accessory);
       this.root.dataset.motion = frame.action;
-      const cue = this.actionVoice.takeCue(frame.action, now);
-      if (cue) void this.playActionVoice(cue);
       window.requestAnimationFrame(update);
     };
     window.requestAnimationFrame(update);
-  }
-
-  private renderCharacter(
-    canvas: HTMLCanvasElement,
-    props: HTMLElement,
-    frame: MotionFrame,
-  ): void {
-    const { x, y, rotation, scale } = frame.character;
-    const transform = `translate(${x}px, ${y}px) rotate(${rotation}deg) scale(${scale})`;
-    canvas.style.transform = transform;
-    props.style.transform = transform;
-  }
-
-  private renderWeapon(weapon: HTMLElement, frame: MotionFrame): void {
-    weapon.style.opacity = String(frame.weapon.opacity);
-    weapon.style.transform = `rotate(${frame.weapon.rotation}deg)`;
-  }
-
-  private renderAccessory(
-    accessory: HTMLImageElement,
-    frame: AccessoryFrame,
-  ): void {
-    if (frame.kind && accessory.dataset.kind !== frame.kind) {
-      accessory.dataset.kind = frame.kind;
-      accessory.src = ACCESSORIES[frame.kind];
-    } else if (!frame.kind) {
-      delete accessory.dataset.kind;
-    }
-    accessory.style.opacity = String(frame.opacity);
-    accessory.style.transform = `rotate(${frame.rotation}deg)`;
   }
 }
 

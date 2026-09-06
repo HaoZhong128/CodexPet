@@ -52,6 +52,8 @@ export class App {
       '<div id="pet"></div><div id="bubble"></div><section id="hud" aria-label="Codex 状态"><div class="status-heading"><span class="status-dot"></span><span class="status-title">CodexPet</span><span id="status-name"></span></div><div class="status-meta"><span id="status-running"></span><span id="status-waiting"></span><span id="status-elapsed"></span></div></section><div id="menu"></div>';
 
     const pet = root.querySelector<HTMLElement>("#pet")!;
+    const bubble = root.querySelector<HTMLElement>("#bubble")!;
+    const hud = root.querySelector<HTMLElement>("#hud")!;
     const menu = root.querySelector<HTMLElement>("#menu")!;
     this.settings = loadSettings();
     await resizePetWindow(this.settings.size);
@@ -74,7 +76,7 @@ export class App {
     this.markMenuSelection();
     this.bindPointerActions(pet);
     this.startMotionLoop();
-    this.live2d.startHitTesting([menu]);
+    this.live2d.startHitTesting([bubble, hud, menu]);
 
     const generation = this.statusGeneration;
     this.unlistenStatus = await listenForStatus((update) =>

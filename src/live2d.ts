@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Application, Rectangle } from "pixi.js";
+import type { Application } from "pixi.js";
 import type { Live2DModel } from "untitled-pixi-live2d-engine/cubism";
 
 import type { MotionFrame } from "./motion";
@@ -23,6 +23,7 @@ export function pixiRenderOptions(
     antialias: true,
     autoDensity: true,
     preference: "webgl" as const,
+    preserveDrawingBuffer: true,
     resolution: devicePixelRatio > 0 ? devicePixelRatio : 1,
   };
 }
@@ -40,7 +41,6 @@ export class Live2DView {
     private readonly host: HTMLElement,
     private readonly app: Application,
     private readonly canvas: HTMLCanvasElement,
-    private readonly RectangleType: typeof Rectangle,
   ) {}
 
   static async create(host: HTMLElement): Promise<Live2DView> {
@@ -60,7 +60,7 @@ export class Live2DView {
     host.append(canvas);
     const app = new pixi.Application();
     await app.init(pixiRenderOptions(canvas, window.devicePixelRatio));
-    const view = new Live2DView(host, app, canvas, pixi.Rectangle);
+    const view = new Live2DView(host, app, canvas);
     new ResizeObserver(() => view.resize()).observe(host);
     view.resize();
     return view;
@@ -121,21 +121,11 @@ export class Live2DView {
     const hostBounds = this.host.getBoundingClientRect();
     const width = Math.max(Math.round(hostBounds.width), 1);
     const height = Math.max(Math.round(hostBounds.height), 1);
-    const extracted = this.app.renderer.extract.pixels({
-      target: this.app.stage,
-      frame: new this.RectangleType(0, 0, width, height),
-      resolution: 1,
-      clearColor: [0, 0, 0, 0],
-    });
-
-    this.sourceCanvas.width = extracted.width;
-    this.sourceCanvas.height = extracted.height;
+    this.sourceCanvas.width = width;
+    this.sourceCanvas.height = height;
     const sourceContext = this.sourceCanvas.getContext("2d")!;
-    sourceContext.putImageData(
-      new ImageData(extracted.pixels, extracted.width, extracted.height),
-      0,
-      0,
-    );
+    sourceContext.clearRect(0, 0, width, height);
+    sourceContext.drawImage(this.canvas, 0, 0, width, height);
 
     this.maskCanvas.width = window.innerWidth;
     this.maskCanvas.height = window.innerHeight;

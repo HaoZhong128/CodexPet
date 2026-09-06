@@ -460,13 +460,19 @@ describe("status contract", () => {
     expect(order).toEqual(["reset", "unlisten", "stop", "close"]);
   });
 
-  it("restricts native hit testing to the open menu", async () => {
+  it("keeps the visible bubble, status card, and menu inside the native region", async () => {
     statusMocks.getStatus.mockResolvedValue(update("idle"));
     const root = document.querySelector<HTMLElement>("#app")!;
     await new App().mount(root);
+    const bubble = root.querySelector<HTMLElement>("#bubble")!;
+    const hud = root.querySelector<HTMLElement>("#hud")!;
     const menu = root.querySelector<HTMLElement>("#menu")!;
 
-    expect(live2dMock.startHitTesting).toHaveBeenCalledWith([menu]);
+    expect(live2dMock.startHitTesting).toHaveBeenCalledWith([
+      bubble,
+      hud,
+      menu,
+    ]);
   });
 
   it("shows waiting choice as active work and not as an interruption", () => {

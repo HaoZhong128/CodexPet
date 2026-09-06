@@ -1,17 +1,25 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Live2DView, pixiRenderOptions } from "./live2d";
 import type { MotionFrame } from "./motion";
 
 const modelSource = vi.hoisted(() => ({ queue: [] as unknown[] }));
+const tauriMocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 
 vi.mock("untitled-pixi-live2d-engine/cubism", () => ({
   Live2DModel: {
     from: vi.fn(async () => modelSource.queue.shift()),
   },
 }));
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriMocks.invoke }));
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 function model() {
   return {
@@ -49,6 +57,7 @@ describe("Live2DView", () => {
       antialias: true,
       backgroundAlpha: 0,
       preference: "webgl",
+      preserveDrawingBuffer: true,
     });
     expect(pixiRenderOptions(canvas, 0).resolution).toBe(1);
   });
@@ -70,9 +79,8 @@ describe("Live2DView", () => {
       host: HTMLElement,
       app: unknown,
       canvas: HTMLCanvasElement,
-      rectangle: unknown,
     ) => Live2DView;
-    const view = new View(host, app, document.createElement("canvas"), class {});
+    const view = new View(host, app, document.createElement("canvas"));
 
     await view.load("first.model3.json");
     view.setMotionFrame(frame());
@@ -84,5 +92,52 @@ describe("Live2DView", () => {
     expect(app.renderer.resize).toHaveBeenCalledWith(400, 560);
     expect(second.scale.set).toHaveBeenCalled();
     expect(second.position.set).toHaveBeenCalledWith(200, 280);
+  });
+
+  it("samples the visible canvas without rendering the model offscreen", async () => {
+    const context = {
+      putImageData: vi.fn(),
+      clearRect: vi.fn(),
+      drawImage: vi.fn(),
+      fillRect: vi.fn(),
+      getImageData: vi.fn(() => ({ data: new Uint8ClampedArray(16) })),
+      fillStyle: "",
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+      context as never,
+    );
+    tauriMocks.invoke.mockResolvedValue(null);
+    const extract = vi.fn(() => ({
+      width: 2,
+      height: 2,
+      pixels: new Uint8ClampedArray(16),
+    }));
+    const host = document.createElement("div");
+    vi.spyOn(host, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 2,
+      height: 2,
+    } as DOMRect);
+    const app = {
+      stage: {},
+      renderer: { extract: { pixels: extract } },
+    };
+    const View = Live2DView as unknown as new (
+      host: HTMLElement,
+      app: unknown,
+      canvas: HTMLCanvasElement,
+    ) => Live2DView;
+    const visibleCanvas = document.createElement("canvas");
+    const view = new View(host, app, visibleCanvas);
+
+    await (
+      view as unknown as {
+        updateWindowRegion(elements: HTMLElement[]): Promise<void>;
+      }
+    ).updateWindowRegion([]);
+
+    expect(extract).not.toHaveBeenCalled();
+    expect(context.drawImage).toHaveBeenCalledWith(visibleCanvas, 0, 0, 2, 2);
   });
 });

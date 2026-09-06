@@ -15,6 +15,6 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 Copy-Item -LiteralPath 'src-tauri\target\release\codexpet.exe' -Destination "$runtime\CodexPet.exe" -Force
 New-Item -ItemType Directory -Force -Path "$runtime\voice" | Out-Null
-foreach ($category in 'idle','running','question','permission','completed','interrupted','click') {
+foreach ($category in 'idle','running','waiting_input','waiting_choice','permission','completed','failed','interrupted','headpat') {
     New-Item -ItemType Directory -Force -Path "$runtime\voice\$category" | Out-Null
 }

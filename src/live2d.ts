@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Application, Rectangle } from "pixi.js";
 import type { Live2DModel } from "untitled-pixi-live2d-engine/cubism";
 
+import type { MotionFrame } from "./motion";
+
 const HOSTED_CORE =
   "https://cubism.live2d.com/sdk-web/core/live2dcubismcore.min.js";
 const CORE_URL = ["127.0.0.1", "localhost"].includes(window.location.hostname)
@@ -11,8 +13,24 @@ const CORE_URL = ["127.0.0.1", "localhost"].includes(window.location.hostname)
 let coreLoading: Promise<void> | null = null;
 let pixiConfigured = false;
 
+export function pixiRenderOptions(
+  canvas: HTMLCanvasElement,
+  devicePixelRatio: number,
+) {
+  return {
+    canvas,
+    backgroundAlpha: 0,
+    antialias: true,
+    autoDensity: true,
+    preference: "webgl" as const,
+    resolution: devicePixelRatio > 0 ? devicePixelRatio : 1,
+  };
+}
+
 export class Live2DView {
   private model: Live2DModel | null = null;
+  private motionFrame: MotionFrame | null = null;
+  private expression: MotionFrame["expression"] | null = null;
   private hitTestInFlight = false;
   private lastHitTestAt = 0;
   private readonly sourceCanvas = document.createElement("canvas");
@@ -41,13 +59,7 @@ export class Live2DView {
     const canvas = document.createElement("canvas");
     host.append(canvas);
     const app = new pixi.Application();
-    await app.init({
-      canvas,
-      backgroundAlpha: 0,
-      antialias: true,
-      autoDensity: true,
-      preference: "webgl",
-    });
+    await app.init(pixiRenderOptions(canvas, window.devicePixelRatio));
     const view = new Live2DView(host, app, canvas, pixi.Rectangle);
     new ResizeObserver(() => view.resize()).observe(host);
     view.resize();
@@ -58,6 +70,7 @@ export class Live2DView {
     this.app.stage.removeChildren();
     if (this.model) destroyModel(this.model);
     this.model = null;
+    this.expression = null;
 
     const { Live2DModel } = await import(
       "untitled-pixi-live2d-engine/cubism"
@@ -73,11 +86,21 @@ export class Live2DView {
     model.anchor.set(0.5, 0.5);
     this.app.stage.addChild(model);
     this.model = model;
+    const internalModel = model.internalModel as unknown as MotionInternalModel;
+    internalModel.on("beforeModelUpdate", () => {
+      if (this.motionFrame) {
+        applyParameterFrame(internalModel.coreModel, this.motionFrame.parameters);
+      }
+    });
     this.resize();
   }
 
-  setExpression(name: string): void {
-    if (this.model) void this.model.expression(name);
+  setMotionFrame(frame: MotionFrame): void {
+    this.motionFrame = frame;
+    if (this.model && this.expression !== frame.expression) {
+      this.expression = frame.expression;
+      void this.model.expression(frame.expression);
+    }
   }
 
   startHitTesting(uiElements: HTMLElement[]): void {
@@ -119,19 +142,14 @@ export class Live2DView {
     const context = this.maskCanvas.getContext("2d", {
       willReadFrequently: true,
     })!;
-    const style = window.getComputedStyle(this.canvas);
-    const matrix = new DOMMatrix(style.transform);
-    const [originX, originY] = style.transformOrigin
-      .split(" ")
-      .map((value) => Number.parseFloat(value));
-    context.translate(hostBounds.left + originX, hostBounds.top + originY);
-    context.transform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f);
-    context.translate(-originX, -originY);
-    context.filter = style.filter;
-    context.drawImage(this.sourceCanvas, 0, 0, hostBounds.width, hostBounds.height);
+    context.drawImage(
+      this.sourceCanvas,
+      hostBounds.left,
+      hostBounds.top,
+      hostBounds.width,
+      hostBounds.height,
+    );
 
-    context.resetTransform();
-    context.filter = "none";
     context.fillStyle = "#fff";
     for (const element of uiElements) {
       const elementStyle = window.getComputedStyle(element);
@@ -172,6 +190,41 @@ export class Live2DView {
       ) * 0.98;
     this.model.scale.set(scale);
     this.model.position.set(safeWidth / 2, safeHeight / 2);
+  }
+}
+
+interface ParameterId {
+  getString(): { s: string };
+}
+
+export interface ParameterCoreModel {
+  getParameterCount(): number;
+  getParameterId(index: number): ParameterId;
+  getParameterMinimumValue(index: number): number;
+  getParameterMaximumValue(index: number): number;
+  setParameterValueByIndex(index: number, value: number): void;
+}
+
+interface MotionInternalModel {
+  coreModel: ParameterCoreModel;
+  on(event: "beforeModelUpdate", listener: () => void): void;
+}
+
+export function applyParameterFrame(
+  coreModel: ParameterCoreModel,
+  parameters: Record<string, number>,
+): void {
+  for (let index = 0; index < coreModel.getParameterCount(); index += 1) {
+    const id = coreModel.getParameterId(index).getString().s;
+    const value = parameters[id];
+    if (value === undefined) continue;
+    coreModel.setParameterValueByIndex(
+      index,
+      Math.min(
+        Math.max(value, coreModel.getParameterMinimumValue(index)),
+        coreModel.getParameterMaximumValue(index),
+      ),
+    );
   }
 }
 

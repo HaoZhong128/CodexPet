@@ -137,30 +137,73 @@ body,
   position: absolute;
   z-index: 10;
   display: none;
-  width: 128px;
-  padding: 5px;
-  border: 1px solid rgb(0 0 0 / 8%);
-  border-radius: 10px;
-  background: rgb(255 255 255 / 90%);
-  box-shadow: 0 10px 28px rgb(0 0 0 / 28%);
+  width: 200px;
+  padding: 10px;
+  border: 1px solid rgb(111 190 211 / 62%);
+  border-radius: 12px;
+  color: #edf8fb;
+  background: rgb(20 25 34 / 92%);
+  box-shadow: 0 12px 30px rgb(7 12 20 / 34%);
+  backdrop-filter: blur(10px);
 }
 
 #menu.is-open {
   display: grid;
+  gap: 5px;
+}
+
+.menu-label {
+  margin-top: 2px;
+  color: rgb(223 240 245 / 66%);
+  font-size: 11px;
+}
+
+.menu-row {
+  display: grid;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  gap: 4px;
+}
+
+.volume-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 3px;
+  color: rgb(237 248 251 / 82%);
+  font-size: 12px;
+}
+
+#voice-volume {
+  width: 100%;
+  margin: 0;
+  accent-color: #43c6e8;
 }
 
 #menu button {
-  border: 0;
+  width: 100%;
+  border: 1px solid transparent;
   border-radius: 7px;
-  padding: 7px 9px;
-  color: #202020;
+  padding: 6px 7px;
+  color: #edf8fb;
   background: transparent;
   font: inherit;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
 
 #menu button:hover,
 #menu button.is-selected {
-  background: rgb(0 0 0 / 8%);
+  border-color: rgb(111 190 211 / 36%);
+  background: rgb(67 198 232 / 14%);
+}
+
+.menu-row button {
+  text-align: center;
+}
+
+#menu button[data-kind="exit"] {
+  color: #e7a0a5;
 }

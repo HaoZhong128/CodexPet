@@ -1,7 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Live2DView } from "./live2d";
 import { MotionController } from "./motion";
+import {
+  effectiveVolume,
+  loadSettings,
+  saveSettings,
+  setVolume,
+  toggleMuted,
+  type AppSettings,
+  type PetSize,
+} from "./settings";
 import {
   getStatus,
   isTerminal,
@@ -9,6 +19,7 @@ import {
   statusPresentation,
   type StatusUpdate,
 } from "./status";
+import { resetPetPosition, resizePetWindow } from "./window-position";
 
 type Outfit = "default" | "maid";
 
@@ -30,7 +41,10 @@ export class App {
   private readonly motion = new MotionController();
   private outfitLoad: Promise<void> = Promise.resolve();
   private statusGeneration = 0;
+  private headpatGeneration = 0;
   private terminalResetTimer: number | undefined;
+  private settings: AppSettings = loadSettings();
+  private unlistenStatus: (() => void) | undefined;
 
   async mount(root: HTMLElement): Promise<void> {
     this.root = root;
@@ -39,23 +53,33 @@ export class App {
 
     const pet = root.querySelector<HTMLElement>("#pet")!;
     const menu = root.querySelector<HTMLElement>("#menu")!;
-    this.live2d = await Live2DView.create(pet);
-    await this.setOutfit("default");
-
-    bindMenu(root, menu, {
-      outfit: (value) => void this.setOutfit(value),
+    this.settings = loadSettings();
+    await resizePetWindow(this.settings.size);
+    await invoke("set_voice_volume", {
+      volume: effectiveVolume(this.settings),
     });
+    this.live2d = await Live2DView.create(pet);
+
+    bindMenu(root, pet, menu, {
+      outfit: (value) => void this.setOutfit(value),
+      size: (value) => void this.setSize(value),
+      volume: (value) => this.setVoiceVolume(value),
+      mute: () => this.toggleVoiceMuted(),
+      panel: () => this.toggleStatusPanel(),
+      reset: () => void resetPetPosition(),
+      exit: () => void this.exit(),
+    });
+    this.renderSettings();
+    await this.setOutfit("default");
     this.markMenuSelection();
     this.bindPointerActions(pet);
     this.startMotionLoop();
-    this.live2d.startHitTesting([
-      root.querySelector<HTMLElement>("#bubble")!,
-      root.querySelector<HTMLElement>("#hud")!,
-      menu,
-    ]);
+    this.live2d.startHitTesting([menu]);
 
     const generation = this.statusGeneration;
-    await listenForStatus((update) => this.applyStatus(update));
+    this.unlistenStatus = await listenForStatus((update) =>
+      this.applyStatus(update),
+    );
     const snapshot = await getStatus();
     if (this.statusGeneration === generation) this.applyStatus(snapshot);
     window.setInterval(() => {
@@ -76,6 +100,7 @@ export class App {
 
   applyStatus(update: StatusUpdate): void {
     this.statusGeneration += 1;
+    this.headpatGeneration += 1;
     if (this.terminalResetTimer !== undefined) {
       window.clearTimeout(this.terminalResetTimer);
       this.terminalResetTimer = undefined;
@@ -111,7 +136,7 @@ export class App {
 
   private markMenuSelection(): void {
     for (const button of this.root.querySelectorAll<HTMLButtonElement>(
-      "#menu button",
+      '#menu button[data-kind="outfit"]',
     )) {
       button.classList.toggle(
         "is-selected",
@@ -121,15 +146,140 @@ export class App {
   }
 
   private bindPointerActions(pet: HTMLElement): void {
+    let pointerState:
+      | { id: number; x: number; y: number; dragging: boolean }
+      | undefined;
     pet.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
-      this.motion.startHeadpat(performance.now());
+      pointerState = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        dragging: false,
+      };
     });
-    this.root.addEventListener("pointerdown", (event) => {
-      if (event.button === 0 && !(event.target as Element).closest("#menu")) {
+    pet.addEventListener("pointermove", (event) => {
+      if (
+        !pointerState ||
+        pointerState.id !== event.pointerId ||
+        pointerState.dragging
+      ) {
+        return;
+      }
+      if (
+        Math.hypot(
+          event.clientX - pointerState.x,
+          event.clientY - pointerState.y,
+        ) > 4
+      ) {
+        pointerState.dragging = true;
         void invoke("start_dragging");
       }
     });
+    pet.addEventListener("pointerup", (event) => {
+      if (!pointerState || pointerState.id !== event.pointerId) return;
+      const stationary =
+        !pointerState.dragging &&
+        Math.hypot(
+          event.clientX - pointerState.x,
+          event.clientY - pointerState.y,
+        ) <= 4;
+      pointerState = undefined;
+      if (stationary) void this.startHeadpat();
+    });
+    pet.addEventListener("pointercancel", () => {
+      pointerState = undefined;
+    });
+  }
+
+  private async startHeadpat(): Promise<void> {
+    this.motion.startHeadpat(performance.now());
+    const statusGeneration = this.statusGeneration;
+    const headpatGeneration = ++this.headpatGeneration;
+    const text = await invoke<string | null>("play_headpat_voice");
+    if (
+      !text ||
+      statusGeneration !== this.statusGeneration ||
+      headpatGeneration !== this.headpatGeneration
+    ) {
+      return;
+    }
+    this.root.querySelector("#bubble")!.textContent = text;
+    window.setTimeout(() => {
+      if (
+        statusGeneration === this.statusGeneration &&
+        headpatGeneration === this.headpatGeneration
+      ) {
+        this.root.querySelector("#bubble")!.textContent =
+          this.status?.bubbleText ?? "";
+      }
+    }, 3_200);
+  }
+
+  private async setSize(size: PetSize): Promise<void> {
+    this.settings = { ...this.settings, size };
+    saveSettings(this.settings);
+    this.renderSettings();
+    await resizePetWindow(size);
+  }
+
+  private setVoiceVolume(value: number): void {
+    this.settings = setVolume(this.settings, value);
+    saveSettings(this.settings);
+    this.renderSettings();
+    void invoke("set_voice_volume", {
+      volume: effectiveVolume(this.settings),
+    });
+  }
+
+  private toggleVoiceMuted(): void {
+    this.settings = toggleMuted(this.settings);
+    saveSettings(this.settings);
+    this.renderSettings();
+    void invoke("set_voice_volume", {
+      volume: effectiveVolume(this.settings),
+    });
+  }
+
+  private toggleStatusPanel(): void {
+    this.settings = {
+      ...this.settings,
+      status_panel_visible: !this.settings.status_panel_visible,
+    };
+    saveSettings(this.settings);
+    this.renderSettings();
+  }
+
+  private renderSettings(): void {
+    this.root.querySelector<HTMLElement>("#hud")!.hidden =
+      !this.settings.status_panel_visible;
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>(
+      '#menu button[data-kind="size"]',
+    )) {
+      button.classList.toggle(
+        "is-selected",
+        button.dataset.value === this.settings.size,
+      );
+    }
+    const slider = this.root.querySelector<HTMLInputElement>("#voice-volume")!;
+    slider.value = String(effectiveVolume(this.settings));
+    const mute = this.root.querySelector<HTMLButtonElement>(
+      '#menu button[data-kind="mute"]',
+    )!;
+    mute.textContent = this.settings.muted ? "恢复声音" : "静音";
+    mute.classList.toggle("is-selected", this.settings.muted);
+    this.root.querySelector<HTMLButtonElement>(
+      '#menu button[data-kind="panel"]',
+    )!.textContent = this.settings.status_panel_visible
+      ? "隐藏状态面板"
+      : "显示状态面板";
+  }
+
+  private async exit(): Promise<void> {
+    this.unlistenStatus?.();
+    this.unlistenStatus = undefined;
+    await invoke("stop_voice");
+    await getCurrentWindow().close();
   }
 
   private startMotionLoop(): void {
@@ -145,20 +295,38 @@ export class App {
 
 function bindMenu(
   root: HTMLElement,
+  pet: HTMLElement,
   menu: HTMLElement,
   actions: {
     outfit(value: Outfit): void;
+    size(value: PetSize): void;
+    volume(value: number): void;
+    mute(): void;
+    panel(): void;
+    reset(): void;
+    exit(): void;
   },
 ): void {
   menu.innerHTML = [
+    '<div class="menu-label">服装</div><div class="menu-row">',
     ...OUTFITS.map(
       ([value, label]) =>
         `<button type="button" data-kind="outfit" data-value="${value}">${label}</button>`,
     ),
+    '</div><div class="menu-label">大小</div><div class="menu-row">',
+    '<button type="button" data-kind="size" data-value="small">75%</button>',
+    '<button type="button" data-kind="size" data-value="standard">100%</button>',
+    '<button type="button" data-kind="size" data-value="large">125%</button>',
+    '</div><label class="volume-row"><span>音量</span><input id="voice-volume" type="range" min="0" max="100" step="1"></label>',
+    '<button type="button" data-kind="mute">静音</button>',
+    '<button type="button" data-kind="panel">隐藏状态面板</button>',
+    '<button type="button" data-kind="reset">回到右下角</button>',
+    '<button type="button" data-kind="exit">退出 CodexPet</button>',
   ].join("");
 
-  root.addEventListener("contextmenu", (event) => {
+  pet.addEventListener("contextmenu", (event) => {
     event.preventDefault();
+    event.stopPropagation();
     menu.classList.add("is-open");
     const rootBounds = root.getBoundingClientRect();
     const menuBounds = menu.getBoundingClientRect();
@@ -174,15 +342,44 @@ function bindMenu(
     menu.style.top = `${top}px`;
   });
   window.addEventListener("pointerdown", (event) => {
-    if (!menu.contains(event.target as Node)) menu.classList.remove("is-open");
+    if (!(event.target instanceof Node) || !menu.contains(event.target)) {
+      menu.classList.remove("is-open");
+    }
   });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") menu.classList.remove("is-open");
+  });
+  menu
+    .querySelector<HTMLInputElement>("#voice-volume")!
+    .addEventListener("input", (event) => {
+      actions.volume(Number((event.target as HTMLInputElement).value));
+    });
   menu.addEventListener("click", (event) => {
     const button = (event.target as Element).closest<HTMLButtonElement>(
       "button[data-kind]",
     );
     if (!button) return;
-    const value = button.dataset.value!;
-    actions.outfit(value as Outfit);
+    const value = button.dataset.value;
+    switch (button.dataset.kind) {
+      case "outfit":
+        actions.outfit(value as Outfit);
+        break;
+      case "size":
+        actions.size(value as PetSize);
+        break;
+      case "mute":
+        actions.mute();
+        break;
+      case "panel":
+        actions.panel();
+        break;
+      case "reset":
+        actions.reset();
+        break;
+      case "exit":
+        actions.exit();
+        break;
+    }
     menu.classList.remove("is-open");
   });
 }

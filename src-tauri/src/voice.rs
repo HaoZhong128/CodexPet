@@ -19,16 +19,18 @@ pub struct VoiceClip {
 
 pub struct VoiceBank {
     clips: HashMap<PetState, Vec<VoiceClip>>,
-    click_clips: Vec<VoiceClip>,
+    headpat: Vec<VoiceClip>,
 }
 
 fn category(state: PetState) -> &'static str {
     match state {
         PetState::Idle => "idle",
         PetState::Running => "running",
-        PetState::WaitingChoice => "question",
+        PetState::WaitingInput => "waiting_input",
+        PetState::WaitingChoice => "waiting_choice",
         PetState::WaitingPermission => "permission",
         PetState::Completed => "completed",
+        PetState::Failed => "failed",
         PetState::Interrupted => "interrupted",
     }
 }
@@ -39,44 +41,21 @@ impl VoiceBank {
         for state in [
             PetState::Idle,
             PetState::Running,
+            PetState::WaitingInput,
             PetState::WaitingChoice,
             PetState::WaitingPermission,
             PetState::Completed,
+            PetState::Failed,
             PetState::Interrupted,
         ] {
             let folder = exe_dir.join("voice").join(category(state));
-            let mut state_clips = Vec::new();
-            if folder.is_dir() {
-                for entry in fs::read_dir(folder)? {
-                    let txt = entry?.path();
-                    let wav = txt.with_extension("wav");
-                    if txt.extension().and_then(OsStr::to_str) == Some("txt") && wav.is_file() {
-                        state_clips.push(VoiceClip {
-                            text: fs::read_to_string(&txt)?,
-                            wav_path: wav,
-                        });
-                    }
-                }
-            }
-            clips.insert(state, state_clips);
+            clips.insert(state, load_pairs(&folder)?);
         }
 
-        let folder = exe_dir.join("voice").join("click");
-        let mut click_clips = Vec::new();
-        if folder.is_dir() {
-            for entry in fs::read_dir(folder)? {
-                let txt = entry?.path();
-                let wav = txt.with_extension("wav");
-                if txt.extension().and_then(OsStr::to_str) == Some("txt") && wav.is_file() {
-                    click_clips.push(VoiceClip {
-                        text: fs::read_to_string(&txt)?,
-                        wav_path: wav,
-                    });
-                }
-            }
-        }
-
-        Ok(Self { clips, click_clips })
+        Ok(Self {
+            clips,
+            headpat: load_pairs(&exe_dir.join("voice/headpat"))?,
+        })
     }
 
     pub fn choose(&self, state: PetState) -> Option<VoiceClip> {
@@ -91,18 +70,36 @@ impl VoiceBank {
         clips.get(nanos as usize % clips.len()).cloned()
     }
 
-    pub fn choose_click(&self) -> Option<VoiceClip> {
-        if self.click_clips.is_empty() {
+    pub fn choose_headpat(&self) -> Option<VoiceClip> {
+        if self.headpat.is_empty() {
             return None;
         }
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .ok()?
             .subsec_nanos();
-        self.click_clips
-            .get(nanos as usize % self.click_clips.len())
+        self.headpat
+            .get(nanos as usize % self.headpat.len())
             .cloned()
     }
+}
+
+fn load_pairs(folder: &Path) -> std::io::Result<Vec<VoiceClip>> {
+    let mut clips = Vec::new();
+    if !folder.is_dir() {
+        return Ok(clips);
+    }
+    for entry in fs::read_dir(folder)? {
+        let txt = entry?.path();
+        let wav = txt.with_extension("wav");
+        if txt.extension().and_then(OsStr::to_str) == Some("txt") && wav.is_file() {
+            clips.push(VoiceClip {
+                text: fs::read_to_string(&txt)?,
+                wav_path: wav,
+            });
+        }
+    }
+    Ok(clips)
 }
 
 pub fn play_wav(path: &Path) {
@@ -120,6 +117,12 @@ pub fn play_wav(path: &Path) {
     }
 }
 
+pub fn stop_wav() {
+    unsafe {
+        PlaySoundW(std::ptr::null(), std::ptr::null_mut(), 0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -132,7 +135,7 @@ mod tests {
     #[test]
     fn loads_only_same_stem_text_and_wav_pairs() {
         let temp = tempdir().unwrap();
-        let folder = temp.path().join("voice/question");
+        let folder = temp.path().join("voice/waiting_choice");
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join("01.txt"), "主人，请选一个吧。").unwrap();
         fs::write(folder.join("01.wav"), b"RIFF-test").unwrap();
@@ -143,28 +146,12 @@ mod tests {
         let clips = bank.clips.get(&PetState::WaitingChoice).unwrap();
         assert_eq!(clips.len(), 1);
         assert_eq!(clips[0].text, "主人，请选一个吧。");
-        assert!(clips[0].wav_path.ends_with("question\\01.wav"));
+        assert!(clips[0].wav_path.ends_with("waiting_choice\\01.wav"));
 
         let clip = bank.choose(PetState::WaitingChoice).unwrap();
 
         assert_eq!(clip.text, "主人，请选一个吧。");
-        assert!(clip.wav_path.ends_with("question\\01.wav"));
-    }
-
-    #[test]
-    fn loads_click_feedback_from_its_own_directory() {
-        let temp = tempdir().unwrap();
-        let folder = temp.path().join("voice/click");
-        fs::create_dir_all(&folder).unwrap();
-        fs::write(folder.join("01.txt"), "当断即断！").unwrap();
-        fs::write(folder.join("01.wav"), b"RIFF-test").unwrap();
-        fs::write(folder.join("ignored.txt"), "没有 wav").unwrap();
-
-        let bank = VoiceBank::load(temp.path()).unwrap();
-        let clip = bank.choose_click().unwrap();
-
-        assert_eq!(clip.text, "当断即断！");
-        assert!(clip.wav_path.ends_with("click\\01.wav"));
+        assert!(clip.wav_path.ends_with("waiting_choice\\01.wav"));
     }
 
     #[test]
@@ -173,9 +160,11 @@ mod tests {
         let cases = [
             (PetState::Idle, "idle"),
             (PetState::Running, "running"),
-            (PetState::WaitingChoice, "question"),
+            (PetState::WaitingInput, "waiting_input"),
+            (PetState::WaitingChoice, "waiting_choice"),
             (PetState::WaitingPermission, "permission"),
             (PetState::Completed, "completed"),
+            (PetState::Failed, "failed"),
             (PetState::Interrupted, "interrupted"),
         ];
 
@@ -205,12 +194,29 @@ mod tests {
         for state in [
             PetState::Idle,
             PetState::Running,
+            PetState::WaitingInput,
             PetState::WaitingChoice,
             PetState::WaitingPermission,
             PetState::Completed,
+            PetState::Failed,
             PetState::Interrupted,
         ] {
             assert!(bank.choose(state).is_none());
         }
+    }
+
+    #[test]
+    fn loads_only_headpat_interaction_pairs() {
+        let temp = tempdir().unwrap();
+        let folder = temp.path().join("voice/headpat");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("01.txt"), "嗯？").unwrap();
+        fs::write(folder.join("01.wav"), b"RIFF-test").unwrap();
+
+        let bank = VoiceBank::load(temp.path()).unwrap();
+        let clip = bank.choose_headpat().unwrap();
+
+        assert_eq!(clip.text, "嗯？");
+        assert!(clip.wav_path.ends_with("headpat\\01.wav"));
     }
 }

@@ -11,10 +11,16 @@ fn get_status(state: tauri::State<'_, bridge::AppState>) -> bridge::StatusUpdate
 }
 
 #[tauri::command]
-fn play_click_voice(state: tauri::State<'_, bridge::AppState>) -> Option<String> {
-    let clip = state.click_feedback()?;
+fn play_headpat_voice(state: tauri::State<'_, bridge::AppState>) -> Option<String> {
+    let clip = state.headpat_feedback()?;
+    voice::stop_wav();
     voice::play_wav(&clip.wav_path);
     Some(clip.text)
+}
+
+#[tauri::command]
+fn stop_voice() {
+    voice::stop_wav();
 }
 
 #[tauri::command]
@@ -44,7 +50,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_status,
-            play_click_voice,
+            play_headpat_voice,
+            stop_voice,
             start_dragging,
             set_window_region
         ])

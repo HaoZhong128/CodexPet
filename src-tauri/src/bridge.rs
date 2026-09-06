@@ -282,8 +282,8 @@ impl AppState {
         self.store.lock().unwrap().current()
     }
 
-    pub fn action_feedback(&self, category: &str) -> Option<VoiceClip> {
-        self.voice.choose_action(category)
+    pub fn headpat_feedback(&self) -> Option<VoiceClip> {
+        self.voice.choose_headpat()
     }
 
     fn apply_at(&self, event: HookEvent, now_ms: u64) -> Option<(StatusUpdate, Option<PathBuf>)> {
@@ -795,8 +795,8 @@ mod tests {
         write_voice_pair(temp.path(), "running", "running-voice", "开始工作。");
         write_voice_pair(
             temp.path(),
-            "question",
-            "question-voice",
+            "waiting_choice",
+            "waiting-choice-voice",
             "主人，请选一个吧。",
         );
         write_voice_pair(temp.path(), "completed", "completed-voice", "任务完成。");
@@ -822,7 +822,7 @@ mod tests {
         assert_eq!(waiting.state, PetState::WaitingChoice);
         assert_eq!(waiting.active_since_ms, Some(1_000));
         assert_eq!(waiting.bubble_text.as_deref(), Some("主人，请选一个吧。"));
-        assert_same_stem(waiting_wav.as_deref().unwrap(), "question-voice");
+        assert_same_stem(waiting_wav.as_deref().unwrap(), "waiting-choice-voice");
 
         let (resumed, resumed_wav) = state
             .apply_at(
@@ -869,15 +869,15 @@ mod tests {
     }
 
     #[test]
-    fn action_feedback_does_not_change_the_current_status() {
+    fn headpat_feedback_does_not_change_the_current_status() {
         let temp = tempdir().unwrap();
-        write_voice_pair(temp.path(), "action/headpat_start", "headpat-voice", "嗯？");
+        write_voice_pair(temp.path(), "headpat", "headpat-voice", "嗯？");
         let state = AppState::load(temp.path()).unwrap();
         state
             .apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000)
             .unwrap();
 
-        let clip = state.action_feedback("headpat_start").unwrap();
+        let clip = state.headpat_feedback().unwrap();
 
         assert_eq!(clip.text, "嗯？");
         assert_same_stem(&clip.wav_path, "headpat-voice");

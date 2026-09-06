@@ -1,13 +1,14 @@
 use std::{
     collections::HashMap,
     ffi::OsStr,
-    fs,
-    os::windows::ffi::OsStrExt,
+    fs::{self, File},
+    io::BufReader,
     path::{Path, PathBuf},
+    sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 
 use crate::bridge::PetState;
 
@@ -102,24 +103,69 @@ fn load_pairs(folder: &Path) -> std::io::Result<Vec<VoiceClip>> {
     Ok(clips)
 }
 
-pub fn play_wav(path: &Path) {
-    let wide = path
-        .as_os_str()
-        .encode_wide()
-        .chain([0])
-        .collect::<Vec<_>>();
-    unsafe {
-        PlaySoundW(
-            wide.as_ptr(),
-            std::ptr::null_mut(),
-            SND_ASYNC | SND_FILENAME | SND_NODEFAULT,
-        );
+struct PlaybackDevice {
+    _sink: MixerDeviceSink,
+    player: Player,
+}
+
+struct AudioInner {
+    volume_percent: u8,
+    device: Option<PlaybackDevice>,
+}
+
+pub struct AudioPlayer {
+    inner: Mutex<AudioInner>,
+}
+
+impl Default for AudioPlayer {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(AudioInner {
+                volume_percent: 100,
+                device: None,
+            }),
+        }
     }
 }
 
-pub fn stop_wav() {
-    unsafe {
-        PlaySoundW(std::ptr::null(), std::ptr::null_mut(), 0);
+impl AudioPlayer {
+    pub fn play(&self, path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let source = Decoder::try_from(BufReader::new(File::open(path)?))?;
+        let mut inner = self.inner.lock().unwrap();
+        if inner.device.is_none() {
+            let sink = DeviceSinkBuilder::open_default_sink()?;
+            let player = Player::connect_new(sink.mixer());
+            inner.device = Some(PlaybackDevice {
+                _sink: sink,
+                player,
+            });
+        }
+        let volume = f32::from(inner.volume_percent) / 100.0;
+        let device = inner.device.as_mut().unwrap();
+        device.player.stop();
+        device.player.set_volume(volume);
+        device.player.append(source);
+        Ok(())
+    }
+
+    pub fn stop(&self) {
+        if let Some(device) = self.inner.lock().unwrap().device.as_ref() {
+            device.player.stop();
+        }
+    }
+
+    pub fn set_volume(&self, volume_percent: u8) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.volume_percent = volume_percent.min(100);
+        let gain = f32::from(inner.volume_percent) / 100.0;
+        if let Some(device) = inner.device.as_ref() {
+            device.player.set_volume(gain);
+        }
+    }
+
+    #[cfg(test)]
+    fn volume_percent(&self) -> u8 {
+        self.inner.lock().unwrap().volume_percent
     }
 }
 
@@ -129,7 +175,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::VoiceBank;
+    use super::{AudioPlayer, VoiceBank};
     use crate::bridge::PetState;
 
     #[test]
@@ -218,5 +264,22 @@ mod tests {
 
         assert_eq!(clip.text, "嗯？");
         assert!(clip.wav_path.ends_with("headpat\\01.wav"));
+    }
+
+    #[test]
+    fn volume_changes_are_clamped_and_persist_for_future_playback() {
+        let player = AudioPlayer::default();
+        assert_eq!(player.volume_percent(), 100);
+        player.set_volume(35);
+        assert_eq!(player.volume_percent(), 35);
+        player.set_volume(200);
+        assert_eq!(player.volume_percent(), 100);
+        player.set_volume(0);
+        assert_eq!(player.volume_percent(), 0);
+    }
+
+    #[test]
+    fn stopping_without_an_open_device_is_safe() {
+        AudioPlayer::default().stop();
     }
 }

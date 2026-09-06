@@ -9,7 +9,7 @@ use serde_json::Value;
 use tauri::Emitter;
 
 use crate::hooks::{create_pipe_server, PipeServer, MAX_PAYLOAD_BYTES};
-use crate::voice::{play_wav, stop_wav, VoiceBank, VoiceClip};
+use crate::voice::{AudioPlayer, VoiceBank, VoiceClip};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookKind {
@@ -300,13 +300,22 @@ impl AppState {
     }
 }
 
-pub fn start_pipe(app: tauri::AppHandle, state: AppState) -> io::Result<()> {
+pub fn start_pipe(
+    app: tauri::AppHandle,
+    state: AppState,
+    audio: Arc<AudioPlayer>,
+) -> io::Result<()> {
     let server = create_pipe_server(true)?;
-    tauri::async_runtime::spawn_blocking(move || run_pipe_loop(server, app, state));
+    tauri::async_runtime::spawn_blocking(move || run_pipe_loop(server, app, state, audio));
     Ok(())
 }
 
-fn run_pipe_loop(mut server: PipeServer, app: tauri::AppHandle, state: AppState) {
+fn run_pipe_loop(
+    mut server: PipeServer,
+    app: tauri::AppHandle,
+    state: AppState,
+    audio: Arc<AudioPlayer>,
+) {
     loop {
         if server.connect().is_err() {
             return;
@@ -328,9 +337,11 @@ fn run_pipe_loop(mut server: PipeServer, app: tauri::AppHandle, state: AppState)
                         .duration_since(UNIX_EPOCH)
                         .map_or(0, |duration| duration.as_millis() as u64);
                     if let Some((update, wav_path)) = state.apply_at(event, now_ms) {
-                        stop_wav();
+                        audio.stop();
                         if let Some(path) = wav_path {
-                            play_wav(&path);
+                            if let Err(error) = audio.play(&path) {
+                                eprintln!("CodexPet voice playback failed: {error}");
+                            }
                         }
                         let _ = app.emit("codexpet://status", update);
                     }
@@ -605,11 +616,7 @@ mod tests {
         store.apply_at(event(HookKind::UserPromptSubmit, "running", None), 1_000);
         store.apply_at(event(HookKind::UserPromptSubmit, "waiting", None), 2_000);
         store.apply_at(
-            event(
-                HookKind::PreToolUse,
-                "waiting",
-                Some("request_user_input"),
-            ),
+            event(HookKind::PreToolUse, "waiting", Some("request_user_input")),
             3_000,
         );
 
@@ -643,10 +650,7 @@ mod tests {
     fn waiting_precedence_is_choice_then_permission_then_input() {
         let mut store = StatusStore::default();
         for session_id in ["input", "permission", "choice"] {
-            store.apply_at(
-                event(HookKind::UserPromptSubmit, session_id, None),
-                1_000,
-            );
+            store.apply_at(event(HookKind::UserPromptSubmit, session_id, None), 1_000);
         }
         store.apply_at(
             parse_hook(json!({
@@ -664,11 +668,7 @@ mod tests {
         );
         let choice = store
             .apply_at(
-                event(
-                    HookKind::PreToolUse,
-                    "choice",
-                    Some("request_user_input"),
-                ),
+                event(HookKind::PreToolUse, "choice", Some("request_user_input")),
                 2_000,
             )
             .unwrap();

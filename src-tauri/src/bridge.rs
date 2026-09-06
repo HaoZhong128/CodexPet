@@ -9,7 +9,7 @@ use serde_json::Value;
 use tauri::Emitter;
 
 use crate::hooks::{create_pipe_server, PipeServer, MAX_PAYLOAD_BYTES};
-use crate::voice::{play_wav, VoiceBank, VoiceClip};
+use crate::voice::{play_wav, stop_wav, VoiceBank, VoiceClip};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookKind {
@@ -23,11 +23,19 @@ pub enum HookKind {
     Interrupt,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserInputKind {
+    Input,
+    Choice,
+}
+
 pub struct HookEvent {
     pub kind: HookKind,
     pub session_id: String,
+    pub resumable_session: bool,
     pub source: Option<String>,
     pub tool_name: Option<String>,
+    pub user_input: Option<UserInputKind>,
 }
 
 pub fn parse_hook(payload: Value) -> Result<HookEvent, String> {
@@ -54,17 +62,44 @@ pub fn parse_hook(payload: Value) -> Result<HookEvent, String> {
         _ => return Err(format!("unknown hook event: {event_name}")),
     };
 
+    let tool_name = object
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let user_input = (kind == HookKind::PreToolUse
+        && tool_name.as_deref() == Some("request_user_input"))
+    .then(|| {
+        let has_options = object
+            .get("tool_input")
+            .and_then(|input| input.get("questions"))
+            .and_then(Value::as_array)
+            .is_some_and(|questions| {
+                questions.iter().any(|question| {
+                    question
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .is_some_and(|options| !options.is_empty())
+                })
+            });
+        if has_options {
+            UserInputKind::Choice
+        } else {
+            UserInputKind::Input
+        }
+    });
     Ok(HookEvent {
         kind,
         session_id: session_id.to_owned(),
+        resumable_session: object
+            .get("transcript_path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| Path::new(path).is_file()),
         source: object
             .get("source")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        tool_name: object
-            .get("tool_name")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        tool_name,
+        user_input,
     })
 }
 
@@ -73,9 +108,11 @@ pub fn parse_hook(payload: Value) -> Result<HookEvent, String> {
 pub enum PetState {
     Idle,
     Running,
+    WaitingInput,
     WaitingChoice,
     WaitingPermission,
     Completed,
+    Failed,
     Interrupted,
 }
 
@@ -103,6 +140,7 @@ struct Task {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TaskPhase {
     Running,
+    WaitingInput,
     WaitingChoice,
     WaitingPermission,
 }
@@ -110,16 +148,12 @@ enum TaskPhase {
 impl StatusStore {
     pub fn apply_at(&mut self, event: HookEvent, now_ms: u64) -> Option<StatusUpdate> {
         let state = match event.kind {
-            HookKind::SessionStart if event.source.as_deref() == Some("startup") => {
-                self.tasks.entry(event.session_id).or_insert(Task {
-                    started_at_ms: now_ms,
-                    phase: TaskPhase::Running,
-                });
-                Some(PetState::Running)
-            }
             HookKind::SessionStart if self.tasks.is_empty() => Some(PetState::Idle),
             HookKind::SessionStart => None,
             HookKind::UserPromptSubmit => {
+                if !event.resumable_session {
+                    return None;
+                }
                 self.tasks
                     .entry(event.session_id)
                     .and_modify(|task| task.phase = TaskPhase::Running)
@@ -131,8 +165,17 @@ impl StatusStore {
             }
             HookKind::PreToolUse if event.tool_name.as_deref() == Some("request_user_input") => {
                 let task = self.tasks.get_mut(&event.session_id)?;
-                task.phase = TaskPhase::WaitingChoice;
-                Some(PetState::WaitingChoice)
+                let state = match event.user_input {
+                    Some(UserInputKind::Choice) => {
+                        task.phase = TaskPhase::WaitingChoice;
+                        PetState::WaitingChoice
+                    }
+                    _ => {
+                        task.phase = TaskPhase::WaitingInput;
+                        PetState::WaitingInput
+                    }
+                };
+                Some(state)
             }
             HookKind::PermissionRequest => {
                 let task = self.tasks.get_mut(&event.session_id)?;
@@ -142,7 +185,7 @@ impl StatusStore {
             HookKind::PostToolUse => {
                 let task = self.tasks.get_mut(&event.session_id)?;
                 let resumes = match task.phase {
-                    TaskPhase::WaitingChoice => {
+                    TaskPhase::WaitingInput | TaskPhase::WaitingChoice => {
                         event.tool_name.as_deref() == Some("request_user_input")
                     }
                     TaskPhase::WaitingPermission => true,
@@ -184,6 +227,12 @@ impl StatusStore {
             .any(|task| task.phase == TaskPhase::WaitingPermission)
         {
             PetState::WaitingPermission
+        } else if self
+            .tasks
+            .values()
+            .any(|task| task.phase == TaskPhase::WaitingInput)
+        {
+            PetState::WaitingInput
         } else if self.tasks.is_empty() {
             PetState::Idle
         } else {
@@ -231,8 +280,8 @@ impl AppState {
         self.store.lock().unwrap().current()
     }
 
-    pub fn click_feedback(&self) -> Option<VoiceClip> {
-        self.voice.choose_click()
+    pub fn action_feedback(&self, category: &str) -> Option<VoiceClip> {
+        self.voice.choose_action(category)
     }
 
     fn apply_at(&self, event: HookEvent, now_ms: u64) -> Option<(StatusUpdate, Option<PathBuf>)> {
@@ -277,6 +326,7 @@ fn run_pipe_loop(mut server: PipeServer, app: tauri::AppHandle, state: AppState)
                         .duration_since(UNIX_EPOCH)
                         .map_or(0, |duration| duration.as_millis() as u64);
                     if let Some((update, wav_path)) = state.apply_at(event, now_ms) {
+                        stop_wav();
                         if let Some(path) = wav_path {
                             play_wav(&path);
                         }
@@ -317,6 +367,22 @@ mod tests {
         assert_eq!(event.kind, HookKind::PreToolUse);
         assert_eq!(event.session_id, "session-1");
         assert_eq!(event.tool_name.as_deref(), Some("request_user_input"));
+        assert_eq!(event.user_input, Some(UserInputKind::Input));
+
+        let event = parse_hook(json!({
+            "session_id": "session-1",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "request_user_input",
+            "tool_input": {
+                "questions": [{
+                    "id": "choice",
+                    "options": [{"label": "继续"}, {"label": "停止"}]
+                }]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(event.user_input, Some(UserInputKind::Choice));
     }
 
     #[test]
@@ -345,42 +411,64 @@ mod tests {
     }
 
     #[test]
-    fn startup_session_tracks_first_desktop_turn_without_user_prompt_submit() {
+    fn session_start_never_counts_an_inactive_open_conversation() {
         let mut store = StatusStore::default();
-        let started = store
-            .apply_at(
+        for (session_id, source) in [
+            ("session-1", "startup"),
+            ("session-2", "resume"),
+            ("session-3", "startup"),
+        ] {
+            store.apply_at(
                 parse_hook(json!({
                     "hook_event_name": "SessionStart",
-                    "session_id": "session-1",
-                    "source": "startup",
+                    "session_id": session_id,
+                    "source": source,
+                }))
+                .unwrap(),
+                1_000,
+            );
+        }
+
+        let current = store.current();
+        assert_eq!(current.state, PetState::Idle);
+        assert_eq!(current.active_count, 0);
+        assert_eq!(current.running_count, 0);
+        assert_eq!(current.waiting_count, 0);
+        assert_eq!(current.active_since_ms, None);
+    }
+
+    #[test]
+    fn nonresumable_internal_desktop_prompt_does_not_create_a_phantom_task() {
+        let temp = tempdir().unwrap();
+        let visible_transcript = temp.path().join("rollout-visible.jsonl");
+        fs::write(&visible_transcript, b"{}").unwrap();
+        let missing_transcript = temp.path().join("rollout-internal.jsonl");
+        let mut store = StatusStore::default();
+
+        let visible = store
+            .apply_at(
+                parse_hook(json!({
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "visible-session",
+                    "transcript_path": visible_transcript,
                 }))
                 .unwrap(),
                 1_000,
             )
             .unwrap();
+        let internal = store.apply_at(
+            parse_hook(json!({
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "internal-session",
+                "transcript_path": missing_transcript,
+            }))
+            .unwrap(),
+            2_000,
+        );
 
-        assert_eq!(started.state, PetState::Running);
-        assert_eq!(started.active_count, 1);
-        assert_eq!(started.running_count, 1);
-        assert_eq!(started.active_since_ms, Some(1_000));
-
-        let repeated = store
-            .apply_at(
-                parse_hook(json!({
-                    "hook_event_name": "SessionStart",
-                    "session_id": "session-1",
-                    "source": "startup",
-                }))
-                .unwrap(),
-                1_500,
-            )
-            .unwrap();
-        assert_eq!(repeated.active_since_ms, Some(1_000));
-
-        let completed = store
-            .apply_at(event(HookKind::Stop, "session-1", None), 2_000)
-            .unwrap();
-        assert_eq!(completed.state, PetState::Completed);
+        assert_eq!(visible.active_count, 1);
+        assert_eq!(internal, None);
+        assert_eq!(store.current().active_count, 1);
     }
 
     #[test]
@@ -440,6 +528,62 @@ mod tests {
             .apply_at(event(HookKind::Stop, "session-1", None), 6_000)
             .unwrap();
         assert_eq!(completed.state, PetState::Completed);
+    }
+
+    #[test]
+    fn request_user_input_without_options_uses_the_plain_input_state() {
+        let mut store = StatusStore::default();
+        store.apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000);
+
+        let waiting = store
+            .apply_at(
+                parse_hook(json!({
+                    "hook_event_name": "PreToolUse",
+                    "session_id": "session-1",
+                    "tool_name": "request_user_input",
+                    "tool_input": {"questions": [{"id": "answer"}]}
+                }))
+                .unwrap(),
+                2_000,
+            )
+            .unwrap();
+
+        assert_eq!(waiting.state, PetState::WaitingInput);
+        assert_eq!(waiting.running_count, 0);
+        assert_eq!(waiting.waiting_count, 1);
+
+        let resumed = store
+            .apply_at(
+                event(
+                    HookKind::PostToolUse,
+                    "session-1",
+                    Some("request_user_input"),
+                ),
+                3_000,
+            )
+            .unwrap();
+        assert_eq!(resumed.state, PetState::Running);
+    }
+
+    #[test]
+    fn stop_text_never_guesses_that_the_task_is_waiting() {
+        let mut store = StatusStore::default();
+        store.apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000);
+
+        let stopped = store
+            .apply_at(
+                parse_hook(json!({
+                    "hook_event_name": "Stop",
+                    "session_id": "session-1",
+                    "last_assistant_message": "请继续说明一下？"
+                }))
+                .unwrap(),
+                2_000,
+            )
+            .unwrap();
+
+        assert_eq!(stopped.state, PetState::Completed);
+        assert_eq!(stopped.active_count, 0);
     }
 
     #[test]
@@ -557,15 +701,7 @@ mod tests {
         let state = AppState::load(temp.path()).unwrap();
 
         let (running, running_wav) = state
-            .apply_at(
-                parse_hook(json!({
-                    "hook_event_name": "SessionStart",
-                    "session_id": "session-1",
-                    "source": "startup",
-                }))
-                .unwrap(),
-                1_000,
-            )
+            .apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000)
             .unwrap();
         assert_eq!(running.state, PetState::Running);
         assert_eq!(running.bubble_text.as_deref(), Some("开始工作。"));
@@ -631,18 +767,18 @@ mod tests {
     }
 
     #[test]
-    fn click_feedback_does_not_change_the_current_status() {
+    fn action_feedback_does_not_change_the_current_status() {
         let temp = tempdir().unwrap();
-        write_voice_pair(temp.path(), "click", "click-voice", "当断即断！");
+        write_voice_pair(temp.path(), "action/headpat_start", "headpat-voice", "嗯？");
         let state = AppState::load(temp.path()).unwrap();
         state
             .apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000)
             .unwrap();
 
-        let clip = state.click_feedback().unwrap();
+        let clip = state.action_feedback("headpat_start").unwrap();
 
-        assert_eq!(clip.text, "当断即断！");
-        assert_same_stem(&clip.wav_path, "click-voice");
+        assert_eq!(clip.text, "嗯？");
+        assert_same_stem(&clip.wav_path, "headpat-voice");
         assert_eq!(state.current().state, PetState::Running);
     }
 
@@ -700,8 +836,11 @@ mod tests {
         HookEvent {
             kind,
             session_id: session_id.to_owned(),
+            resumable_session: true,
             source: None,
             tool_name: tool_name.map(str::to_owned),
+            user_input: (kind == HookKind::PreToolUse && tool_name == Some("request_user_input"))
+                .then_some(UserInputKind::Choice),
         }
     }
 }

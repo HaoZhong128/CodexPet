@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./app";
 import {
-  hudText,
   isTerminal,
   statusPresentation,
   type StatusUpdate,
@@ -137,6 +136,36 @@ describe("status contract", () => {
     });
   });
 
+  it("renders the structured status card with true task counts", async () => {
+    vi.setSystemTime(4_000);
+    statusMocks.getStatus.mockResolvedValue(update("idle"));
+    const root = document.querySelector<HTMLElement>("#app")!;
+    const app = new App();
+    await app.mount(root);
+
+    app.applyStatus({
+      state: "waiting_permission",
+      activeCount: 3,
+      runningCount: 2,
+      waitingCount: 1,
+      activeSinceMs: 1_000,
+      bubbleText: "需要授权。",
+    });
+
+    expect(root.querySelector("#hud")!.getAttribute("data-tone")).toBe(
+      "waiting",
+    );
+    expect(root.querySelector("#status-name")!.textContent).toBe("等待授权");
+    expect(root.querySelector("#status-running")!.textContent).toBe("运行 2");
+    expect(root.querySelector("#status-waiting")!.textContent).toBe("等待你 1");
+    expect(root.querySelector("#status-elapsed")!.textContent).toBe("00:00:03");
+
+    app.applyStatus(update("running"));
+    expect(
+      root.querySelector<HTMLElement>("#status-waiting")!.hidden,
+    ).toBe(true);
+  });
+
   it("drives one parameter motion from the latest status", async () => {
     statusMocks.getStatus.mockResolvedValue(update("idle"));
     let motionTick!: FrameRequestCallback;
@@ -204,9 +233,11 @@ describe("status contract", () => {
       bubbleText: "主人，请选一个吧。",
     };
 
-    expect(hudText(waiting, 4_000)).toBe(
-      "进行中 1 · 等待你 1\n已运行 00:00:03",
-    );
+    expect(statusPresentation(waiting, 4_000)).toMatchObject({
+      running: "运行 0",
+      waiting: "等待你 1",
+      elapsed: "00:00:03",
+    });
     expect(isTerminal(waiting)).toBe(false);
 
     const interrupted: StatusUpdate = {

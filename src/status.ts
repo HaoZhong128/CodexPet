@@ -95,21 +95,6 @@ export function statusPresentation(
   };
 }
 
-export function hudText(update: StatusUpdate, nowMs: number): string {
-  const waiting =
-    update.waitingCount > 0 ? ` · 等待你 ${update.waitingCount}` : "";
-  const first = `进行中 ${update.activeCount}${waiting}`;
-  if (update.activeSinceMs === null) return first;
-  const seconds = Math.max(
-    0,
-    Math.floor((nowMs - update.activeSinceMs) / 1_000),
-  );
-  const hh = String(Math.floor(seconds / 3_600)).padStart(2, "0");
-  const mm = String(Math.floor((seconds % 3_600) / 60)).padStart(2, "0");
-  const ss = String(seconds % 60).padStart(2, "0");
-  return `${first}\n已运行 ${hh}:${mm}:${ss}`;
-}
-
 function formatDuration(durationMs: number): string {
   const seconds = Math.floor(durationMs / 1_000);
   const hh = String(Math.floor(seconds / 3_600)).padStart(2, "0");

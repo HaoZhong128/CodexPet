@@ -38,11 +38,11 @@ function model() {
   };
 }
 
-function frame(): MotionFrame {
+function frame(breath = 0.5): MotionFrame {
   return {
     action: "idle",
     expression: "happy",
-    parameters: {},
+    parameters: { ParamBreath: breath },
   };
 }
 
@@ -92,6 +92,71 @@ describe("Live2DView", () => {
     expect(app.renderer.resize).toHaveBeenCalledWith(400, 560);
     expect(second.scale.set).toHaveBeenCalled();
     expect(second.position.set).toHaveBeenCalledWith(200, 280);
+  });
+
+  it("keeps the model lower edge fixed while the breath scale changes", async () => {
+    const breathingModel = model();
+    modelSource.queue.push(breathingModel);
+    const host = document.createElement("div");
+    vi.spyOn(host, "getBoundingClientRect").mockReturnValue({
+      width: 400,
+      height: 560,
+    } as DOMRect);
+    const app = {
+      stage: { removeChildren: vi.fn(), addChild: vi.fn() },
+      renderer: { resize: vi.fn() },
+    };
+    const View = Live2DView as unknown as new (
+      host: HTMLElement,
+      app: unknown,
+      canvas: HTMLCanvasElement,
+    ) => Live2DView;
+    const view = new View(host, app, document.createElement("canvas"));
+    await view.load("character.model3.json");
+
+    view.setMotionFrame(frame(0));
+    expect(breathingModel.scale.set).toHaveBeenLastCalledWith(3.89648);
+    expect(breathingModel.position.set).toHaveBeenLastCalledWith(200, 281.176);
+
+    view.setMotionFrame(frame(1));
+    expect(breathingModel.scale.set).toHaveBeenLastCalledWith(3.94352);
+    expect(breathingModel.position.set).toHaveBeenLastCalledWith(200, 278.824);
+  });
+
+  it("preserves the current breath scale after resizing and changing outfits", async () => {
+    const first = model();
+    const second = model();
+    modelSource.queue.push(first, second);
+    let width = 400;
+    const host = document.createElement("div");
+    vi.spyOn(host, "getBoundingClientRect").mockImplementation(
+      () => ({ width, height: 560 }) as DOMRect,
+    );
+    const app = {
+      stage: { removeChildren: vi.fn(), addChild: vi.fn() },
+      renderer: { resize: vi.fn() },
+    };
+    const View = Live2DView as unknown as new (
+      host: HTMLElement,
+      app: unknown,
+      canvas: HTMLCanvasElement,
+    ) => Live2DView;
+    const view = new View(host, app, document.createElement("canvas"));
+    await view.load("first.model3.json");
+    view.setMotionFrame(frame(1));
+
+    width = 300;
+    (
+      view as unknown as {
+        resize(): void;
+      }
+    ).resize();
+    expect(first.scale.set).toHaveBeenLastCalledWith(2.95764);
+    expect(first.position.set).toHaveBeenLastCalledWith(150, 279.118);
+
+    await view.load("second.model3.json");
+    expect(second.scale.set).toHaveBeenLastCalledWith(2.95764);
+    expect(second.position.set).toHaveBeenLastCalledWith(150, 279.118);
   });
 
   it("samples the visible canvas without rendering the model offscreen", async () => {

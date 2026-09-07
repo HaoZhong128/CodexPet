@@ -32,6 +32,9 @@ export class Live2DView {
   private model: Live2DModel | null = null;
   private motionFrame: MotionFrame | null = null;
   private expression: MotionFrame["expression"] | null = null;
+  private baseScale = 1;
+  private modelCenterX = 0;
+  private modelCenterY = 0;
   private hitTestInFlight = false;
   private lastHitTestAt = 0;
   private readonly sourceCanvas = document.createElement("canvas");
@@ -97,6 +100,7 @@ export class Live2DView {
 
   setMotionFrame(frame: MotionFrame): void {
     this.motionFrame = frame;
+    this.applyBreathTransform();
     if (this.model && this.expression !== frame.expression) {
       this.expression = frame.expression;
       void this.model.expression(frame.expression);
@@ -173,13 +177,26 @@ export class Live2DView {
     const safeHeight = Math.max(height, 1);
     this.app.renderer.resize(safeWidth, safeHeight);
     if (!this.model) return;
-    const scale =
+    this.baseScale =
       Math.min(
         safeWidth / this.model.internalModel.width,
         safeHeight / this.model.internalModel.height,
       ) * 0.98;
+    this.modelCenterX = safeWidth / 2;
+    this.modelCenterY = safeHeight / 2;
+    this.applyBreathTransform();
+  }
+
+  private applyBreathTransform(): void {
+    if (!this.model) return;
+    const breath = this.motionFrame?.parameters.ParamBreath ?? 0.5;
+    const scale = this.baseScale * (1 + (breath - 0.5) * 0.012);
     this.model.scale.set(scale);
-    this.model.position.set(safeWidth / 2, safeHeight / 2);
+    this.model.position.set(
+      this.modelCenterX,
+      this.modelCenterY +
+        ((this.baseScale - scale) * this.model.internalModel.height) / 2,
+    );
   }
 }
 

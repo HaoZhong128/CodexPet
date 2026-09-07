@@ -66,27 +66,33 @@ pub fn parse_hook(payload: Value) -> Result<HookEvent, String> {
         .get("tool_name")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let user_input = (kind == HookKind::PreToolUse
-        && tool_name.as_deref() == Some("request_user_input"))
-    .then(|| {
-        let has_options = object
-            .get("tool_input")
-            .and_then(|input| input.get("questions"))
-            .and_then(Value::as_array)
-            .is_some_and(|questions| {
-                questions.iter().any(|question| {
-                    question
-                        .get("options")
-                        .and_then(Value::as_array)
-                        .is_some_and(|options| !options.is_empty())
-                })
-            });
-        if has_options {
-            UserInputKind::Choice
+    let user_input =
+        if kind == HookKind::PreToolUse && tool_name.as_deref() == Some("request_user_input") {
+            let has_options = object
+                .get("tool_input")
+                .and_then(|input| input.get("questions"))
+                .and_then(Value::as_array)
+                .is_some_and(|questions| {
+                    questions.iter().any(|question| {
+                        question
+                            .get("options")
+                            .and_then(Value::as_array)
+                            .is_some_and(|options| !options.is_empty())
+                    })
+                });
+            if has_options {
+                Some(UserInputKind::Choice)
+            } else {
+                Some(UserInputKind::Input)
+            }
+        } else if kind == HookKind::Stop {
+            object
+                .get("last_assistant_message")
+                .and_then(Value::as_str)
+                .and_then(stop_user_input)
         } else {
-            UserInputKind::Input
-        }
-    });
+            None
+        };
     Ok(HookEvent {
         kind,
         session_id: session_id.to_owned(),
@@ -101,6 +107,41 @@ pub fn parse_hook(payload: Value) -> Result<HookEvent, String> {
         tool_name,
         user_input,
     })
+}
+
+fn stop_user_input(message: &str) -> Option<UserInputKind> {
+    let message = message.trim();
+    if [
+        "请选择",
+        "请选一个",
+        "你想选哪一个",
+        "回复序号",
+        "回复数字",
+        "回复选项",
+    ]
+    .iter()
+    .any(|prompt| message.contains(prompt))
+    {
+        return Some(UserInputKind::Choice);
+    }
+    if message.ends_with(['?', '？'])
+        || [
+            "请回复",
+            "请确认",
+            "请告诉我",
+            "请再发送",
+            "请输入",
+            "请继续说明",
+            "需要你回复",
+            "等你回复",
+        ]
+        .iter()
+        .any(|prompt| message.contains(prompt))
+    {
+        Some(UserInputKind::Input)
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -191,10 +232,20 @@ impl StatusStore {
                 task.phase = TaskPhase::Running;
                 None
             }
-            HookKind::Stop => self
-                .tasks
-                .remove(&event.session_id)
-                .map(|_| PetState::Completed),
+            HookKind::Stop => match event.user_input {
+                Some(user_input) => {
+                    let task = self.tasks.get_mut(&event.session_id)?;
+                    task.phase = match user_input {
+                        UserInputKind::Input => TaskPhase::WaitingInput,
+                        UserInputKind::Choice => TaskPhase::WaitingChoice,
+                    };
+                    None
+                }
+                None => self
+                    .tasks
+                    .remove(&event.session_id)
+                    .map(|_| PetState::Completed),
+            },
             HookKind::Interrupt => self
                 .tasks
                 .remove(&event.session_id)
@@ -578,11 +629,11 @@ mod tests {
     }
 
     #[test]
-    fn stop_text_never_guesses_that_the_task_is_waiting() {
+    fn stop_with_an_explicit_reply_request_waits_for_input() {
         let mut store = StatusStore::default();
         store.apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000);
 
-        let stopped = store
+        let waiting = store
             .apply_at(
                 parse_hook(json!({
                     "hook_event_name": "Stop",
@@ -594,8 +645,54 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(stopped.state, PetState::Completed);
-        assert_eq!(stopped.active_count, 0);
+        assert_eq!(waiting.state, PetState::WaitingInput);
+        assert_eq!(waiting.active_count, 1);
+        assert_eq!(waiting.running_count, 0);
+        assert_eq!(waiting.waiting_count, 1);
+    }
+
+    #[test]
+    fn stop_with_explicit_options_waits_for_a_choice() {
+        let mut store = StatusStore::default();
+        store.apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000);
+
+        let waiting = store
+            .apply_at(
+                parse_hook(json!({
+                    "hook_event_name": "Stop",
+                    "session_id": "session-1",
+                    "last_assistant_message": "请选择一个：\n\n1. 保持现状\n2. 修改状态"
+                }))
+                .unwrap(),
+                2_000,
+            )
+            .unwrap();
+
+        assert_eq!(waiting.state, PetState::WaitingChoice);
+        assert_eq!(waiting.active_count, 1);
+        assert_eq!(waiting.running_count, 0);
+        assert_eq!(waiting.waiting_count, 1);
+    }
+
+    #[test]
+    fn stop_with_an_ordinary_summary_completes_the_task() {
+        let mut store = StatusStore::default();
+        store.apply_at(event(HookKind::UserPromptSubmit, "session-1", None), 1_000);
+
+        let completed = store
+            .apply_at(
+                parse_hook(json!({
+                    "hook_event_name": "Stop",
+                    "session_id": "session-1",
+                    "last_assistant_message": "修改已经完成，测试全部通过。"
+                }))
+                .unwrap(),
+                2_000,
+            )
+            .unwrap();
+
+        assert_eq!(completed.state, PetState::Completed);
+        assert_eq!(completed.active_count, 0);
     }
 
     #[test]

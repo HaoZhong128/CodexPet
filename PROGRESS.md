@@ -45,23 +45,23 @@ Codex hook -> CodexPet.exe hook -> named pipe -> Rust StatusStore -> Tauri statu
 - Controlled runtime Hook events verified idle, running, waiting input, waiting choice, waiting permission, completed, interrupted, concurrent counts, terminal reset, SessionEnd cleanup, and continued named-pipe reception.
 - A real `UserPromptSubmit` captured on 2026-09-07 used the current task id and an existing transcript file, ruling out transcript-path rejection as the observed fault. The fault was the unconditional `Stop -> Completed` transition for ordinary text replies that explicitly requested user input.
 - Red/green regression coverage now verifies explicit reply request -> waiting input, explicit options -> waiting choice, and an ordinary summary -> completed. The rebuilt deployed runtime was exercised through the named pipe and the status card showed running, waiting input, resumed running, and waiting choice with correct running/waiting counts.
+- The user confirmed on 2026-09-07 that a real explicit reply request displayed `等待输入`, `运行 0`, and `等待你 1` correctly. Audio acceptance was explicitly skipped and audio quality was not evaluated.
 - The existing independent task `CodexPet 状态识别验收` (`01a06fcc-2463-77a2-a4ce-2b4641a2610b`, `gpt-5.6-sol`, low) previously reported 12/12 PASS on an earlier deployed build. A fresh final-candidate run executed through GUI shutdown, but that turn and a follow-up report request both returned empty task messages, so neither is counted as current independent acceptance evidence.
 
 ## Blocked externally
 
 - Real failed-task detection: Codex hook currently exposes no reliable failed event or result field. Display mapping remains implemented but production detection is not claimed.
 - The final candidate still needs a readable independent 12/12 report; the reused acceptance task currently completes with an empty result channel.
-- Visual appearance still requires user acceptance. The user explicitly skipped audio acceptance on 2026-09-07, so no audio-quality claim is made.
 
 ## Remaining
 
 - [x] Status aggregation and status card.
 - [x] Simplified Live2D feedback and DPR rendering.
 - [x] Audio, menu/settings, cleanup, and deployment.
-- [ ] User visual acceptance.
+- [x] User visual acceptance for the adjusted layout, breathing feedback, and corrected waiting display.
 - [x] Audio acceptance intentionally skipped by the user; audio quality was not evaluated.
 - [ ] Readable independent 12/12 status acceptance on the final deployed hash.
 
 ## Next step
 
-Ask the user to verify that an explicit reply request now displays as waiting input, then reuse the existing independent acceptance task when its result channel is healthy; do not create a duplicate task.
+Reuse the existing independent acceptance task when its result channel is healthy; do not create a duplicate task. Real failed-task detection remains blocked until Codex exposes a reliable failure signal.

@@ -1,20 +1,35 @@
+[CmdletBinding()]
+param(
+    [string]$RuntimePath
+)
+
 $ErrorActionPreference = 'Stop'
-$runtime = 'G:\Codex code\CodexPet-runtime'
+$projectRoot = Split-Path -Parent $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($RuntimePath)) {
+    $RuntimePath = Join-Path (Split-Path -Parent $projectRoot) 'CodexPet-runtime'
+}
+$runtimeDirectory = [System.IO.Path]::GetFullPath($RuntimePath)
 
-npm ci
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-npm test
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-npm run build
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo test --manifest-path src-tauri\Cargo.toml
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo build --release --manifest-path src-tauri\Cargo.toml --features tauri/custom-protocol
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Push-Location $projectRoot
+try {
+    npm ci
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    npm test
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    npm run build
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    cargo test --manifest-path src-tauri\Cargo.toml
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    cargo build --release --manifest-path src-tauri\Cargo.toml --features tauri/custom-protocol
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-New-Item -ItemType Directory -Force -Path $runtime | Out-Null
-Copy-Item -LiteralPath 'src-tauri\target\release\codexpet.exe' -Destination "$runtime\CodexPet.exe" -Force
-New-Item -ItemType Directory -Force -Path "$runtime\voice" | Out-Null
-foreach ($category in 'idle','running','waiting_input','waiting_choice','permission','completed','failed','interrupted','headpat') {
-    New-Item -ItemType Directory -Force -Path "$runtime\voice\$category" | Out-Null
+    New-Item -ItemType Directory -Force -Path $runtimeDirectory | Out-Null
+    Copy-Item -LiteralPath 'src-tauri\target\release\codexpet.exe' -Destination (Join-Path $runtimeDirectory 'CodexPet.exe') -Force
+    $voiceDirectory = Join-Path $runtimeDirectory 'voice'
+    New-Item -ItemType Directory -Force -Path $voiceDirectory | Out-Null
+    foreach ($category in 'idle','running','waiting_input','waiting_choice','permission','completed','failed','interrupted','headpat') {
+        New-Item -ItemType Directory -Force -Path (Join-Path $voiceDirectory $category) | Out-Null
+    }
+} finally {
+    Pop-Location
 }

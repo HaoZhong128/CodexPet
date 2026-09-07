@@ -1,9 +1,26 @@
 # CodexPet
 
-这是我个人使用的 Windows Codex 桌宠。
+个人使用的 Windows Codex Live2D 桌宠。
 
-运行 `G:\Codex code\CodexPet-runtime\CodexPet.exe`，并在使用 Codex 前先启动这个 GUI。程序启动时会自动配置自己的 Codex Hooks，同时保留其他 Hook。
+## 最终目录
 
-状态语音放在 EXE 同目录的 `voice\idle`、`running`、`question`、`permission`、`completed` 或 `interrupted` 中，点击角色时播放的反馈语音放在 `voice\click` 中。每条语音必须使用同一文件名的 UTF-8 `.txt` 与 PCM16 单声道 `.wav`，例如 `question\01.txt` 和 `question\01.wav`。新增或替换语音后重启程序才会加载。
+- `G:\Codex code\CodexPet`：完整项目源码。
+- `G:\Codex code\CodexPet-runtime`：可独立运行的软件，包含 `CodexPet.exe` 和运行时语音。
 
-在桌宠上点击右键，可以切换默认/女仆服装和五种表情。
+## 生成 EXE
+
+在源码目录运行：
+
+```powershell
+.\scripts\build-local.ps1
+```
+
+脚本会安装依赖、运行前端和 Rust 测试、生成正式版本，并把最终 EXE 复制到独立运行目录。
+
+## 使用
+
+运行 `G:\Codex code\CodexPet-runtime\CodexPet.exe`。程序启动时会配置自己的 Codex Hooks，同时保留其他 Hook。
+
+Live2D 模型和纹理位于源码目录的 `public\live2d`。运行时语音位于独立运行目录的 `voice`，按状态分为 `idle`、`running`、`waiting_input`、`waiting_choice`、`permission`、`completed`、`failed`、`interrupted` 和 `headpat`。
+
+右键点击角色可调整大小和音量、静音、显示或隐藏状态面板、切换服装、重置位置或退出程序。
